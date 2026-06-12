@@ -1,0 +1,7 @@
+{
+  "name": "时评雷达：by PJLab",
+  "description": "实时热榜聚合、深度AI分析、事实核查与溯源创作工具。重构写作流程",
+  "requestFramePermissions": [
+    "autoplay"
+  ]
+}

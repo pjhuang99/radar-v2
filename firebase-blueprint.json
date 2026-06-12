@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "audit_log": {
+      "title": "AuditLog",
+      "description": "System audits for article generation actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "epoch": { "type": "number" },
+        "action": { "type": "string" },
+        "title": { "type": "string" },
+        "draftMeta": { "type": "string" },
+        "referencesCount": { "type": "number" },
+        "wordCount": { "type": "number" },
+        "operator": { "type": "string" },
+        "articleBody": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "epoch", "action", "operator"]
+    }
+  },
+  "firestore": {
+    "/audit_logs/{id}": {
+      "schema": "audit_log",
+      "description": "Collection storing all audit logs"
+    }
+  }
+}
