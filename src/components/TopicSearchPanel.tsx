@@ -41,7 +41,6 @@ const TAB_LABELS: Record<TabKey, string> = {
 export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelProps) {
   const [topic, setTopic] = useState('');
   const [freshness, setFreshness] = useState<string>('month');
-  const [zone, setZone] = useState<string>('cn');
   const [step, setStep] = useState<'input' | 'searching' | 'results'>('input');
   const [activeTab, setActiveTab] = useState<TabKey>('anysearch');
 
@@ -99,7 +98,7 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
     setSinaWarning('');
     setStep('searching');
 
-    const searchBody = { topic: topic.trim(), freshness, zone };
+    const searchBody = { topic: topic.trim(), freshness };
 
     // Fire both engines in parallel
     const [anyP, sinaP] = await Promise.allSettled([
@@ -399,18 +398,6 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
                 <option value="day">24小时</option>
                 <option value="week">本周</option>
                 <option value="month">本月</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="uppercase tracking-wider font-bold">地区</span>
-              <select
-                value={zone}
-                onChange={(e) => setZone(e.target.value)}
-                className="border border-border bg-paper px-2 py-1 text-[0.65rem] focus:border-ink outline-none"
-                disabled={step === 'searching'}
-              >
-                <option value="cn">国内+国际</option>
-                <option value="intl">仅国际</option>
               </select>
             </div>
           </div>

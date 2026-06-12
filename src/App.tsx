@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Component } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from "motion/react";
 import { Rss, Plus, Trash2, Settings, RefreshCw, ExternalLink, Volume2, SquarePen } from "lucide-react";
@@ -148,7 +148,7 @@ export default function App() {
     for (let i = 0; i < userAgent.length; i++) {
       const char = userAgent.charCodeAt(i);
       hash = (hash << 5) - hash + char;
-      hash = hash & hash; // Convert to 32bit integer
+      hash = hash | 0; // Convert to 32bit integer
     }
     const part1 = Math.abs(hash).toString(36);
     const part2 = Math.random().toString(36).substring(2, 8);
@@ -393,7 +393,9 @@ export default function App() {
   const handleAdminPasswordSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const pin = adminPasswordInput.trim();
-    if (pin === '8888' || pin === 'admin' || pin === 'admin888') {
+    // Admin PIN read from build-time env var (Vite define), with fallback
+    const validPin = (typeof process !== 'undefined' && (process as any).env?.ADMIN_PIN) || 'radar_admin_2026';
+    if (pin === validPin) {
       setShowAdminPasswordModal(false);
       setAdminPasswordInput('');
       setAdminPasswordError('');
@@ -473,7 +475,7 @@ export default function App() {
     refCount: number = 0, 
     wordCount: number = 0,
     articleBody: string = '',
-    operator: string = 'peijian@gmail.com'
+    operator: string = activeOperator || 'unknown'
   ) => {
     // 统一并过滤非"生成文章"的操作
     let finalAction = action;
@@ -649,7 +651,8 @@ export default function App() {
 
   const handleReset = () => {
     if (window.confirm('确定要重置所有 AI 配置（Key、模型）吗？')) {
-      localStorage.clear();
+      // Only clear AI config keys, not drafts/RSS/audit logs
+      ['deepseek_key', 'deepseek_model', 'deep_thinking', 'search_engine'].forEach(k => localStorage.removeItem(k));
       window.location.reload();
     }
   };
@@ -677,7 +680,7 @@ export default function App() {
     setStatusBar('✓ 已保存到草稿箱');
 
     // Behavior audit logging
-    logAdminBehavior('保存到草稿箱', newDraft.title, `字数: ${newDraft.body.length} | ${newDraft.metaInfo}`, newDraft.references?.length || 0, newDraft.body.length, newDraft.body, 'peijian@gmail.com');
+    logAdminBehavior('保存到草稿箱', newDraft.title, `字数: ${newDraft.body.length} | ${newDraft.metaInfo}`, newDraft.references?.length || 0, newDraft.body.length, newDraft.body, activeOperator);
 
     setTimeout(() => {
       setSaveBtnText('💾 保存到草稿箱');
@@ -1410,7 +1413,7 @@ ${research}
         const modelName = customModel || 'deepseek-chat';
         const metaStr = `[ 模型: ${modelName} | 模式: ${styleMap[style] || style} | 立场: ${personaMap[persona] || persona} ]`;
         const actionLabel = (preExtractedFacts && preExtractedFacts.length > 0) ? '自由写作' : '开始创作';
-        logAdminBehavior(actionLabel, title, metaStr, draftReferences.length, cleaned.length, cleaned, 'peijian@gmail.com');
+        logAdminBehavior(actionLabel, title, metaStr, draftReferences.length, cleaned.length, cleaned, activeOperator);
       } catch (errLog) {
         console.error("Failed to write success audit log", errLog);
       }
@@ -1543,7 +1546,7 @@ ${draftBody}`;
       setIsFactchecking(false);
       setStatusBar('事实核查完成');
       playNotification();
-      logAdminBehavior('事实核查', draftTitle, `使用核查信源数: ${validUrls.length}个`, validUrls.length, draftBody.length, draftBody, 'peijian@gmail.com');
+      logAdminBehavior('事实核查', draftTitle, `使用核查信源数: ${validUrls.length}个`, validUrls.length, draftBody.length, draftBody, activeOperator);
       setTimeout(() => setStatusBar('就绪'), 3000);
     } catch (e: any) {
       setFactcheckItems([<div key="error" className="text-accent font-mono">核查中断: {e.message}</div>]);
