@@ -236,24 +236,70 @@ export function registerSharedRoutes(app: express.Express) {
       }
 
       // Default: Jina
-      const response = await fetch(`https://r.jina.ai/${encodeURIComponent(url)}`, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-          "Accept": "text/plain, text/html, application/json",
-          "X-With-Links-Summary": "true",
-        },
-        signal: AbortSignal.timeout(30000),
-      });
+      let jinaFailed = false;
+      try {
+        const response = await fetch(`https://r.jina.ai/${encodeURIComponent(url)}`, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept": "text/plain, text/html, application/json",
+            "X-With-Links-Summary": "true",
+          },
+          signal: AbortSignal.timeout(10000),
+        });
 
-      if (response.ok) {
-        const text = await response.text();
-        if (text.includes("环境异常") || text.includes("验证后继续访问")) {
-          return res.status(403).send("SCRAPE_BLOCKED_BY_WAF");
+        if (response.ok) {
+          const text = await response.text();
+          if (text.includes("环境异常") || text.includes("验证后继续访问")) {
+            return res.status(403).send("SCRAPE_BLOCKED_BY_WAF");
+          }
+          return res.send(text);
         }
-        return res.send(text);
+        console.warn(`[Scrape] Jina returned ${response.status}, falling back to direct fetch`);
+        jinaFailed = true;
+      } catch (jinaErr: any) {
+        console.warn(`[Scrape] Jina failed: ${jinaErr.message}, falling back to direct fetch`);
+        jinaFailed = true;
       }
-      throw new Error(`Scraper service returned ${response.status}`);
+
+      // Fallback: direct fetch with browser UA + strip HTML
+      if (jinaFailed) {
+        try {
+          const directRes = await fetch(url, {
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+            signal: AbortSignal.timeout(12000),
+          });
+          if (directRes.ok) {
+            const html = await directRes.text();
+            const plainText = html
+              .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+              .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+              .replace(/<[^>]+>/g, "\n")
+              .replace(/&nbsp;/g, " ")
+              .replace(/&amp;/g, "&")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&quot;/g, '"')
+              .replace(/&#x27;/g, "'")
+              .replace(/\n{3,}/g, "\n\n")
+              .replace(/[ \t]+/g, " ")
+              .trim();
+            if (plainText.length > 100) {
+              console.log(`[Scrape] Direct fallback success, ${plainText.length} chars`);
+              return res.send(plainText.substring(0, 8000));
+            }
+          }
+          console.warn(`[Scrape] Direct fallback returned ${directRes.status} or too-short content`);
+        } catch (directErr: any) {
+          console.warn(`[Scrape] Direct fallback also failed: ${directErr.message}`);
+        }
+        throw new Error("Both Jina and direct fetch failed for this URL");
+      }
     } catch (error: any) {
       console.error(`[Scrape] Error for ${url}:`, error.message);
       res.status(500).json({ error: "Failed to scrape: " + error.message });

@@ -3,6 +3,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from "motion/react";
 import { Rss, Plus, Trash2, Settings, RefreshCw, ExternalLink, Volume2, SquarePen } from "lucide-react";
 import TopicSearchPanel from './components/TopicSearchPanel';
+import { classifySource } from './config/sources';
 
 interface Topic {
   title: string;
@@ -37,6 +38,7 @@ interface Draft {
   sourceContent?: string;
   sourceUrl?: string;
   sourceName?: string;
+  autoRetrievedSources?: { title: string; url: string; source: string; content: string; authorityLevel: string }[];
 }
 
 // Global error handler to suppress noisy extension errors
@@ -236,7 +238,10 @@ export default function App() {
   };
   
   const [factCheckUrls, setFactCheckUrls] = useState<string[]>(['', '']);
-  
+  const [autoRetrievedSources, setAutoRetrievedSources] = useState<
+    { title: string; url: string; source: string; content: string; authorityLevel: string }[]
+  >([]);
+
   // Free Write State
   const [freeTitle, setFreeTitle] = useState('');
   const [freeUrls, setFreeUrls] = useState<string[]>(['']);
@@ -348,13 +353,14 @@ export default function App() {
           factCheckUrls: factCheckUrls,
           sourceContent: currentSourceContent,
           sourceUrl: currentSourceUrl,
-          sourceName: currentSourceName
+          sourceName: currentSourceName,
+          autoRetrievedSources: autoRetrievedSources
         };
         localStorage.setItem('commentary_radar_autosave', JSON.stringify(currentDraft));
       }, 2000);
       return () => clearTimeout(timer);
     }
-  }, [draftBody, draftTitle, draftMetaInfo, showDraft, draftReferences, factCheckReport, factCheckUrls, currentSourceContent, currentSourceUrl, currentSourceName]);
+  }, [draftBody, draftTitle, draftMetaInfo, showDraft, draftReferences, factCheckReport, factCheckUrls, autoRetrievedSources, currentSourceContent, currentSourceUrl, currentSourceName]);
 
   useEffect(() => {
     const savedAutosave = localStorage.getItem('commentary_radar_autosave');
@@ -672,7 +678,8 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
       factCheckUrls: factCheckUrls,
       sourceContent: currentSourceContent,
       sourceUrl: currentSourceUrl,
-      sourceName: currentSourceName
+      sourceName: currentSourceName,
+      autoRetrievedSources: autoRetrievedSources
     };
     setDrafts(prev => [newDraft, ...prev]);
     playNotification();
@@ -697,12 +704,14 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
     setDraftReferences(d.references || []);
     setFactCheckReport(d.factCheckReport || '');
     setFactCheckUrls(d.factCheckUrls || ['', '']);
+    setAutoRetrievedSources(d.autoRetrievedSources || []);
     setCurrentSourceContent(d.sourceContent || '');
     setCurrentSourceUrl(d.sourceUrl || '');
     setCurrentSourceName(d.sourceName || '');
-    
+
     if (d.factCheckReport) {
-      const { items, corrections } = parseFactCheckReport(d.factCheckReport, d.references || [], d.sourceUrl || '', d.title, d.factCheckUrls || []);
+      const autoUrls = (d.autoRetrievedSources || []).map(s => s.url);
+      const { items, corrections } = parseFactCheckReport(d.factCheckReport, d.references || [], d.sourceUrl || '', d.title, d.factCheckUrls || [], autoUrls);
       setFactcheckItems(items);
       setPendingCorrections(corrections);
       setShowFactcheck(true);
@@ -1444,16 +1453,54 @@ ${research}
           <span className="w-2 h-2 bg-gold rounded-full"></span>
           正在提取文中关键事实与数据...
         </div>
-        <div className="text-[0.7rem] text-muted">基于原文素材与关联检索进行双重比对，这可能需要 10-20 秒</div>
+        <div className="text-[0.7rem] text-muted">基于原文素材与自动检索权威信源进行交叉比对，这可能需要 10-20 秒</div>
       </div>
     ]);
-    
+
     try {
       const now = new Date();
       const fullDateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
       const timeStr = now.getFullYear() + "年" + (now.getMonth() + 1) + "月";
-      
-      // Fetch content from specified URLs
+
+      // ── Phase A: Auto-retrieve independent authoritative sources ──────────
+      let autoSources: { title: string; url: string; source: string; content: string; authorityLevel: string }[] = [];
+      try {
+        setStatusBar('正在自动检索独立权威信源...');
+        const queries = extractFactCheckQueries(draftTitle, draftBody);
+        if (queries.length > 0) {
+          setFactcheckItems(prev => [...prev.filter(item => (item as any)?.key !== 'auto-search' && (item as any)?.key !== 'auto-success' && (item as any)?.key !== 'auto-warn'),
+            <div key="auto-search" className="flex items-center gap-2 text-[0.65rem] text-blue-600 bg-blue-50 p-2 rounded border border-blue-200 mt-2">
+              <span>🔎</span> 自动检索关键词: <span className="font-bold">{queries.join(' / ')}</span>
+            </div>
+          ]);
+
+          autoSources = await performAutoRetrieval(queries);
+          setAutoRetrievedSources(autoSources);
+
+          if (autoSources.length > 0) {
+            const scrapedCount = autoSources.filter(s => !s.content.startsWith('[自动抓取未成功]')).length;
+            const msg = scrapedCount === autoSources.length
+              ? `✅ 自动检索到 ${autoSources.length} 个独立信源: ${autoSources.map(s => s.source).join('、')}`
+              : `✅ 检索到 ${autoSources.length} 个信源 (${scrapedCount} 个已抓取正文): ${autoSources.map(s => s.source).join('、')}`;
+            setFactcheckItems(prev => [...prev.filter(item => (item as any)?.key !== 'auto-success' && (item as any)?.key !== 'auto-warn'),
+              <div key="auto-success" className="text-[0.65rem] text-green-600 font-bold bg-green-50 p-2 rounded border border-green-200 mt-2 border-l-4">
+                {msg}
+              </div>
+            ]);
+          } else {
+            setFactcheckItems(prev => [...prev.filter(item => (item as any)?.key !== 'auto-success' && (item as any)?.key !== 'auto-warn'),
+              <div key="auto-warn" className="text-[0.65rem] text-amber-600 bg-amber-50 p-2 rounded border border-amber-200 mt-2 border-l-4">
+                ⚠️ 未检索到独立信源，将依赖手动指定信源与写作素材进行核查
+              </div>
+            ]);
+          }
+        }
+      } catch (e) {
+        console.warn('Auto-retrieval failed, continuing with manual sources only', e);
+        setAutoRetrievedSources([]);
+      }
+
+      // ── Phase B: Fetch content from user-specified URLs ───────────────────
       let extraSourceContent = '';
       const validUrls = factCheckUrls.filter(u => u && u.startsWith('http'));
       let scrapeCount = 0;
@@ -1498,9 +1545,24 @@ ${research}
         }
       }
 
-      const sourceContext = (currentSourceContent || extraSourceContent) 
-        ? `【多维参考信源清单】：\n${draftReferences.map((r, i) => `[来源${i+1}]：标题《${r.title}》, 链接: ${r.url}`).join('\n')}\n\n【原始新闻参考素材】：\n${currentSourceContent}\n\n【用户手动提供的"指定核查信源"（这是本次核查的最权威依据，若与正文冲突请务必指出）】：\n${extraSourceContent || '无'}\n\n` 
-        : '【注意】：未提供原始素材，请完全依赖你的内部知识库，并对不确定的事实标注搜索建议。';
+      // Build auto-retrieved sources section
+      const autoSourceContent = autoSources.length > 0
+        ? autoSources.map((s, i) =>
+            `【自动检索信源 ${i+1}】（${s.authorityLevel === 'high' ? '一级权威' : '二级可信'}，独立检索验证）：\n标题: ${s.title}\n来源: ${s.source}\nURL: ${s.url}\n正文摘录: ${s.content || '抓取失败'}\n`
+          ).join('\n')
+        : '';
+
+      const sourceContext = (currentSourceContent || extraSourceContent || autoSourceContent)
+        ? [
+            `【多维参考信源清单】：\n${draftReferences.map((r, i) => `[来源${i+1}]：标题《${r.title}》, 链接: ${r.url}`).join('\n')}`,
+            '',
+            `【原始新闻参考素材】（写作时使用的素材，可能存在偏差）：\n${currentSourceContent || '无'}`,
+            '',
+            `【用户手动提供的"指定核查信源"】（最高优先级，若与正文冲突请务必指出）：\n${extraSourceContent || '无'}`,
+            '',
+            `【自动检索的独立核查信源】（AI 自动从互联网检索的权威媒体报道，完全独立于写作过程，提供第三方验证视角）：\n${autoSourceContent || '无'}`
+          ].join('\n')
+        : '【注意】：未提供任何素材，请完全依赖你的内部知识库，并对不确定的事实标注搜索建议。';
 
     const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
 
@@ -1508,19 +1570,24 @@ ${research}
 【重要基准时间】：${today}（注：请以此作为评估文章时效性的唯一基准，当前已是2026年）
 
 【核查任务】：
-请根据下方提供的【用户手动提供的"指定核查信源"】和【原始新闻参考素材】，对《待核查文章》进行深度审计。
-**特别注意：如果【用户手动提供的"指定核查信源"】中包含的信息与《待核查文章》不符，请视其为严重事实错误（ERROR）。**
+请根据下方提供的【用户手动提供的"指定核查信源"】、【自动检索的独立核查信源】和【原始新闻参考素材】，对《待核查文章》进行深度审计。
+
+**特别注意**：
+- 如果【用户手动提供的"指定核查信源"】中包含的信息与《待核查文章》不符，请视其为严重事实错误（ERROR）。
+- 【自动检索的独立核查信源】是系统从互联网自动检索的第三方权威文章，它们与写作过程使用的素材完全独立。如果这些独立信源与《待核查文章》存在事实矛盾，这构成重要线索（标记为 ERROR 或 WARNING）。
+- 如果原始参考素材与独立信源一致但与《待核查文章》不符，也请标记为 ERROR。
 
 【核查基准】：
 ${sourceContext}
 
 【输出格式】（严格按行输出，使用|分割，确保每行4个或5个字段）：
-ERROR|草稿中的严重事实错误|正确事实表述 (精准修正)|错误原因 (简要)|验证此事实的权威URL、[来源N] 或 [核查信源N]
-WARNING|表述偏颇/修辞不当/细节缺失|改进建议 (如何表述更客观或更充实)|建议原因 (如：存在立场偏差/数据支持不足)|验证参考URL、[来源N] 或 [核查信源N]
-OK|草稿中的正确表述|验证此事实的权威URL、[来源N] 或 [核查信源N]
+ERROR|草稿中的严重事实错误|正确事实表述 (精准修正)|错误原因 (简要)|验证此事实的权威URL、[来源N]、[核查信源N] 或 [自动信源N]
+WARNING|表述偏颇/修辞不当/细节缺失|改进建议 (如何表述更客观或更充实)|建议原因 (如：存在立场偏差/数据支持不足)|验证参考URL、[来源N]、[核查信源N] 或 [自动信源N]
+OK|草稿中的正确表述|验证此事实的权威URL、[来源N]、[核查信源N] 或 [自动信源N]
 
 【溯源标签使用规范】：
 - 如果核实依据来自"指定核查信源"，请务必使用 [核查信源1]、[核查信源2] 等标签。
+- 如果核实依据来自"自动检索信源"，请使用 [自动信源1]、[自动信源2] 等标签。
 - 如果核实依据来自"原始参考素材"，请使用 [来源1]、[来源2] 等标签。
 - 如果是你的内部知识库验证，请提供具体的权威URL。
 
@@ -1535,12 +1602,13 @@ ${draftBody}`;
       const report = await callAI(currentKey, prompt, { maxTokens: 3000, useSearch: false, temperature: 0.1 });
       setFactCheckReport(report);
       
-      const { items, corrections } = parseFactCheckReport(report, draftReferences, currentSourceUrl, draftTitle, factCheckUrls);
-      
+      const autoSourceUrls = autoSources.map(s => s.url);
+      const { items, corrections } = parseFactCheckReport(report, draftReferences, currentSourceUrl, draftTitle, factCheckUrls, autoSourceUrls);
+
       setFactcheckItems(prev => {
         const logs = prev.filter(item => {
           const key = (item as any)?.key;
-          return key === 'scrape-success' || key === 'scrape-fail';
+          return key === 'scrape-success' || key === 'scrape-fail' || key === 'auto-success' || key === 'auto-warn' || key === 'auto-search';
         });
         return [...logs, ...items];
       });
@@ -1548,7 +1616,7 @@ ${draftBody}`;
       setIsFactchecking(false);
       setStatusBar('事实核查完成');
       playNotification();
-      logAdminBehavior('事实核查', draftTitle, `使用核查信源数: ${validUrls.length}个`, validUrls.length, draftBody.length, draftBody, activeOperator);
+      logAdminBehavior('事实核查', draftTitle, `核查信源: ${validUrls.length}个手动 + ${autoSources.length}个自动检索`, validUrls.length + autoSources.length, draftBody.length, draftBody, activeOperator);
       setTimeout(() => setStatusBar('就绪'), 3000);
     } catch (e: any) {
       setFactcheckItems([<div key="error" className="text-accent font-mono">核查中断: {e.message}</div>]);
@@ -1557,7 +1625,7 @@ ${draftBody}`;
     }
   };
 
-  const parseFactCheckReport = (report: string, refs: any[], sUrl: string, sTitle: string, userFactUrls: string[] = []) => {
+  const parseFactCheckReport = (report: string, refs: any[], sUrl: string, sTitle: string, userFactUrls: string[] = [], autoSourceUrls: string[] = []) => {
     const lines = report.split('\n').filter(l => l.trim() && (l.includes('|')));
     
     if (lines.length === 0) {
@@ -1578,36 +1646,68 @@ ${draftBody}`;
       const isWarning = line.startsWith('WARNING');
       const isOk = line.startsWith('OK|');
       
-      const rawUrlOrTag = (isError || isWarning) ? p[4] : p[2];
-      const hasSpecificUrl = rawUrlOrTag && rawUrlOrTag.startsWith('http');
-      let primaryLink = '';
-      let linkLabel = '';
+      const rawUrlOrTag = ((isError || isWarning) ? p[4] : p[2]) || '';
 
-      if (hasSpecificUrl) {
-        primaryLink = rawUrlOrTag;
-        linkLabel = '🔗 外部验证信源';
-      } else if (rawUrlOrTag && rawUrlOrTag.includes('[核查信源')) {
-        const match = rawUrlOrTag.match(/\[核查信源\s*(\d+)\]/);
-        const sourceIdx = match ? parseInt(match[1]) - 1 : 0;
-        primaryLink = userFactUrls[sourceIdx] || (sUrl || '');
-        linkLabel = '🔗 指定核查信源对照';
-      } else if (rawUrlOrTag && rawUrlOrTag.includes('[来源')) {
-        const match = rawUrlOrTag.match(/\[来源(\d+)\]/);
-        const sourceIdx = match ? parseInt(match[1]) - 1 : 0;
-        const ref = refs[sourceIdx];
-        primaryLink = ref ? ref.url : (sUrl || '');
-        linkLabel = ref ? `🔗 [${ref.source}] 原始对照` : '🔗 原始素材对照';
-      } else {
-        primaryLink = sUrl || (refs[0]?.url || `https://search.sina.com.cn/search?q=${encodeURIComponent(sTitle)}&tp=news`);
-        linkLabel = '🔗 原始素材对照';
+      // Extract clean domain from URL for display
+      const domainLabel = (url: string): string => {
+        try {
+          const host = new URL(url).hostname.replace(/^www\./, '');
+          return host.length > 30 ? host.substring(0, 28) + '…' : host;
+        } catch { return ''; }
+      };
+
+      // Parse combined source string: split by 、, ,, ; etc. into individual links
+      const parseSourceLinks = (raw: string): { link: string; label: string }[] => {
+        if (!raw || !raw.trim()) return [];
+        const parts = raw.split(/[、,；;，\n]+/).map(s => s.trim()).filter(Boolean);
+        return parts.map(part => {
+          if (part.startsWith('http')) {
+            const d = domainLabel(part);
+            return { link: part, label: `🔗 ${d || '外部验证'}` };
+          } else if (part.includes('[核查信源')) {
+            const m = part.match(/\[核查信源\s*(\d+)\]/);
+            const idx = m ? parseInt(m[1]) - 1 : 0;
+            const url = userFactUrls[idx] || sUrl || '';
+            const d = domainLabel(url);
+            return { link: url, label: `🔗 ${d || '指定核查信源'}` };
+          } else if (part.includes('[自动信源')) {
+            const m = part.match(/\[自动信源\s*(\d+)\]/);
+            const idx = m ? parseInt(m[1]) - 1 : 0;
+            const url = autoSourceUrls[idx] || '';
+            const d = domainLabel(url);
+            return { link: url, label: `🤖 ${d || '自动检索信源'}` };
+          } else if (part.includes('[来源')) {
+            const m = part.match(/\[来源(\d+)\]/);
+            const idx = m ? parseInt(m[1]) - 1 : 0;
+            const ref = refs[idx];
+            const url = ref?.url || sUrl || '';
+            const d = domainLabel(url);
+            return { link: url, label: `🔗 ${d || ref?.source || '原始对照'}` };
+          } else {
+            const url = sUrl || (refs[0]?.url || `https://search.sina.com.cn/search?q=${encodeURIComponent(sTitle)}&tp=news`);
+            const d = domainLabel(url);
+            return { link: url, label: `🔗 ${d || '原始素材对照'}` };
+          }
+        });
+      };
+
+      const sourceLinks = parseSourceLinks(rawUrlOrTag);
+      // Fallback if parsing produced nothing
+      if (!sourceLinks.length) {
+        sourceLinks.push({
+          link: sUrl || (refs[0]?.url || `https://search.sina.com.cn/search?q=${encodeURIComponent(sTitle)}&tp=news`),
+          label: '🔗 原始素材对照'
+        });
       }
-      
+      const hasSpecificUrl = sourceLinks.some(l => l.link.startsWith('http'));
+      const primaryLink = sourceLinks[0]?.link || '';
+
       if (isError || isWarning) {
         const severityTag = isError ? 'ERR' : 'WARN';
         const severityClass = isError ? 'bg-accent' : 'bg-blue text-white';
-        
+
         corrections.push({ original: p[1], corrected: p[2], sourceLink: primaryLink, id: index });
-        
+
         items.push(
           <div className="fact-item group" key={index}>
             <div className="flex items-start gap-2 mb-2">
@@ -1618,8 +1718,10 @@ ${draftBody}`;
                 <div className="text-[0.7rem] text-muted mt-1 italic">{isWarning ? '理由: ' : '原因: '}{p[3]}</div>
               </div>
             </div>
-            <div className="flex gap-2 ml-8">
-              <a className="fact-link" href={primaryLink} target="_blank" rel="noreferrer">{linkLabel}</a>
+            <div className="flex gap-2 ml-8 flex-wrap">
+              {sourceLinks.map((sl, i) => (
+                <a key={i} className="fact-link" href={sl.link} target="_blank" rel="noreferrer">{sl.label}</a>
+              ))}
               {!hasSpecificUrl && (
                 <a className="fact-link bg-muted/10 text-muted" href={`https://search.sina.com.cn/search?q=${encodeURIComponent(p[1])}&tp=news`} target="_blank" rel="noreferrer">🌐 联机检索</a>
               )}
@@ -1628,18 +1730,271 @@ ${draftBody}`;
         );
       } else if (isOk) {
         items.push(
-          <div className="fact-ok flex items-center gap-2" key={index}>
+          <div className="fact-ok flex items-center gap-2 flex-wrap" key={index}>
             <span className="text-green">●</span>
             <span className="flex-1">核实一致：{p[1]}</span>
-            <a className="text-[0.65rem] text-blue hover:underline" href={primaryLink} target="_blank" rel="noreferrer">
-              {hasSpecificUrl ? '查看外部溯源' : '溯源'}
-            </a>
+            {sourceLinks.map((sl, i) => (
+              <a key={i} className="text-[0.65rem] text-blue hover:underline" href={sl.link} target="_blank" rel="noreferrer">
+                {sl.link.startsWith('http') ? '查看外部溯源' : '溯源'}
+              </a>
+            ))}
           </div>
         );
       }
     });
 
     return { items, corrections };
+  };
+
+  // ── Auto-Retrieval: Extract search queries from draft ──────────────────────
+  const extractFactCheckQueries = (title: string, body: string): string[] => {
+    const queries: string[] = [];
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+    const isTemplateText = (text: string): boolean => {
+      if (/【|】/.test(text)) return true;
+      if (/核心论点|核心观点|摘要|字以内|标题建议|备选标题/.test(text)) return true;
+      if (/文章开头|金句|结尾|排版|标记|标签/.test(text)) return true;
+      if (/^\d+[\.\、\s]/.test(text) && text.length < 10) return true;
+      if (/^[#\-•·\*▸]+/.test(text)) return true;
+      return false;
+    };
+
+    // English proper nouns: handles SpaceX, Tesla, iPhone, GDP, AI etc.
+    const extractEnglishNouns = (text: string): string[] => {
+      const matches = text.match(/[A-Z][a-zA-Z]{2,}(?:\'?s)?(?:\s*\d+)?/g);
+      return matches ? [...new Set(matches.map(m => m.trim()))] : [];
+    };
+
+    // Extract Chinese key terms: short meaningful chunks (2-6 chars)
+    // from segments that look like named entities (start of clauses, contain key chars)
+    const extractChineseTerms = (text: string): string[] => {
+      const terms: string[] = [];
+      // Split into clauses
+      const clauses = text.split(/[，,。！!？?；;：:、\n]+/).map(c => c.trim());
+      for (const clause of clauses) {
+        if (!clause || isTemplateText(clause)) continue;
+        // From each clause, take a short leading phrase (Chinese subjects are at the start)
+        // Take up to 8 chars, but try to break at common word boundaries
+        const cnStart = clause.replace(/^[A-Za-z0-9s]+/, '');
+        if (!cnStart || cnStart.length < 2) continue;
+        const short = cnStart.substring(0, Math.min(cnStart.length, 7));
+        // Trim trailing particles
+        const trimmed = short.replace(/[的了着过是的有在和与或到对从向把被让给为因以能会可要也还就已才又更很都只]+$/, '');
+        if (trimmed.length >= 2 && /[一-鿿]/.test(trimmed)) {
+          terms.push(trimmed);
+        }
+      }
+      return terms.slice(0, 6); // max 6 Chinese terms
+    };
+
+    // ── Collect entities ────────────────────────────────────────────────────
+    const cleanTitle = (title || '').trim();
+    const cleanBody = (body || '').replace(/<[^>]*>/g, '').replace(/【.*?】/g, '').trim();
+
+    // English nouns from title + body
+    const enNouns = [...new Set([
+      ...extractEnglishNouns(cleanTitle),
+      ...extractEnglishNouns(cleanBody.substring(0, 800)),
+    ])];
+
+    // Chinese terms from title (highest signal)
+    const titleCnTerms = cleanTitle && !isTemplateText(cleanTitle)
+      ? extractChineseTerms(cleanTitle)
+      : [];
+
+    // Body: only extract English nouns (Chinese clauses from body are too noisy)
+    const skipHeader = Math.min(150, Math.floor(cleanBody.length * 0.15));
+    const bodySample = cleanBody.substring(skipHeader, skipHeader + 600);
+    const bodyEnNouns = bodySample ? extractEnglishNouns(bodySample) : [];
+    const allEnNouns = [...new Set([...enNouns, ...bodyEnNouns])];
+
+    // ── Build short keyword queries (≤30 chars, space-separated) ──────────
+    const buildQ = (terms) => {
+      const deduped = [...new Set(terms.filter(Boolean))];
+      return deduped.join(' ').substring(0, 30).trim();
+    };
+
+    // Query 1: English nouns + first Chinese terms from title
+    const q1Terms = [...allEnNouns.slice(0, 2), ...titleCnTerms.slice(0, 2)];
+    const q1 = buildQ(q1Terms);
+    if (q1.length >= 3) queries.push(q1);
+
+    // Query 2: Remaining Chinese title terms (different combination)
+    const usedInQ1 = new Set(q1Terms);
+    const q2Terms = titleCnTerms.filter(t => !usedInQ1.has(t)).slice(0, 3);
+    const q2 = buildQ(q2Terms);
+    if (q2.length >= 3 && !queries.includes(q2)) queries.push(q2);
+
+    // Query 3: Any leftover English nouns from body
+    if (queries.length < 3) {
+      const usedAll = new Set([...q1Terms, ...q2Terms]);
+      const extraEn = allEnNouns.filter(e => !usedAll.has(e)).slice(0, 3);
+      const q3 = buildQ(extraEn);
+      if (q3.length >= 3 && !queries.includes(q3)) queries.push(q3);
+    }
+
+    // ── Fallback: if very few terms, use title segments directly ────────────
+    if (queries.length < 2 && cleanTitle) {
+      const segs = cleanTitle
+        .split(/[，,。！!？?；;：:、\s]+/)
+        .map(s => s.trim())
+        .filter(s => s.length >= 4 && s.length <= 15 && !isTemplateText(s));
+      for (const seg of segs) {
+        if (queries.length >= 3) break;
+        const short = seg.substring(0, 12);
+        if (!queries.includes(short)) queries.push(short);
+      }
+    }
+
+    return queries.slice(0, 3).filter(q => q.length >= 3);
+  };
+
+  // ── Auto-Retrieval: Search + scrape authoritative independent sources ──────
+  const performAutoRetrieval = async (
+    queries: string[]
+  ): Promise<{ title: string; url: string; source: string; content: string; authorityLevel: string }[]> => {
+    if (!queries.length) return [];
+
+    // Step 1: Search Sina + AnySearch directly from browser (parallel, no backend)
+    const SEARCH_TIMEOUT = 7000;
+    const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || '';
+
+    // Common result mapper for both engines
+    const MEDIA_DOMAIN_MAP: Record<string, string> = {
+      '界面新闻': 'jiemian.com', '澎湃新闻': 'thepaper.cn', '财新': 'caixin.com',
+      '新华社': 'xinhuanet.com', '央视新闻': 'cctv.com', '中新网': 'chinanews.com',
+      '第一财经': 'yicai.com', '经济观察报': 'eeo.com.cn', '21世纪经济报道': '21jingji.com',
+      '每日经济新闻': 'nbd.com.cn', '证券时报': 'stcn.com', '36氪': '36kr.com',
+      '虎嗅': 'huxiu.com', '钛媒体': 'tmtpost.com', '新浪科技': 'sina.com.cn',
+    };
+    const mapResult = (title: string, url: string, source: string): RawResult => {
+      const mappedDomain = MEDIA_DOMAIN_MAP[source] || '';
+      return {
+        title: (title || '').replace(/<[^>]+>/g, ''),
+        url: url || '',
+        source: source || '',
+        authorityLevel: classifySource(mappedDomain || url),
+        authorityScore: mappedDomain ? 4 : (source ? 3 : 2),
+        relevanceScore: 3,
+      };
+    };
+
+    const allSearches = queries.flatMap(query => [
+      // Engine 1: Sina News (fast, no auth)
+      (async () => {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
+        try {
+          const res = await fetch(`https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(query)}&pf=0&ps=0&page=1&sort=time&num=8&ie=utf-8`, {
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://search.sina.com.cn/" },
+            signal: ctrl.signal,
+          });
+          if (!res.ok) return [] as RawResult[];
+          const data = await res.json();
+          return ((data?.result?.list || []) as any[]).map((r: any) =>
+            mapResult(r.origin_title || r.title || '', r.url || '', r.media || '')
+          );
+        } catch { return [] as RawResult[]; }
+        finally { clearTimeout(tid); }
+      })(),
+      // Engine 2: AnySearch (broader coverage, needs API key)
+      (async () => {
+        if (!ANYSEARCH_KEY) return [] as RawResult[];
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
+        try {
+          const res = await fetch('https://api.anysearch.com/v1/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ANYSEARCH_KEY}` },
+            body: JSON.stringify({ query, max_results: 8 }),
+            signal: ctrl.signal,
+          });
+          if (!res.ok) return [] as RawResult[];
+          const data = await res.json();
+          const results = data?.data?.results || data?.results || [];
+          return (results as any[]).map((r: any) =>
+            mapResult(r.title || '', r.url || '', r.source || (r.url ? new URL(r.url).hostname : ''))
+          );
+        } catch { return [] as RawResult[]; }
+        finally { clearTimeout(tid); }
+      })(),
+    ]);
+
+    interface RawResult {
+      title: string; url: string; source: string; authorityLevel: string;
+      authorityScore: number; relevanceScore: number;
+    }
+
+    const settled = await Promise.allSettled(allSearches);
+    const allRawResults: RawResult[] = [];
+    for (const r of settled) {
+      if (r.status === 'fulfilled') allRawResults.push(...r.value);
+    }
+
+    console.log(`[AutoRetrieval] ${queries.length} queries → ${allRawResults.length} raw results (Sina + AnySearch)`);
+
+    if (!allRawResults.length) return [];
+
+    // Step 2: Deduplicate by URL, sort by authority
+    const seenUrls = new Set<string>();
+    const sorted = allRawResults
+      .filter(r => {
+        if (!r.url || seenUrls.has(r.url)) return false;
+        seenUrls.add(r.url);
+        return true;
+      })
+      .sort((a, b) => {
+        const levelOrder = { high: 3, medium: 2, unknown: 1 };
+        return (levelOrder[b.authorityLevel as keyof typeof levelOrder] || 0)
+             - (levelOrder[a.authorityLevel as keyof typeof levelOrder] || 0);
+      });
+
+    // Pick: prefer high/medium, fall back to unknown
+    const authoritative = sorted.filter(r => r.authorityLevel === 'high' || r.authorityLevel === 'medium');
+    const picked = authoritative.length >= 2
+      ? authoritative.slice(0, 3)
+      : [...authoritative, ...sorted.filter(r => r.authorityLevel === 'unknown')].slice(0, 3);
+
+    console.log(`[AutoRetrieval] ${authoritative.length} authoritative, picked ${picked.length}: ${picked.map(p => p.source).join(', ')}`);
+
+    if (!picked.length) return [];
+
+    // Step 3: Try to scrape full text (best-effort, fast timeout since Jina may be down)
+    const scraped = await Promise.allSettled(
+      picked.map(async (r) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        try {
+          const res = await fetch(`/api/scrape?url=${encodeURIComponent(r.url)}`, { signal: controller.signal });
+          if (!res.ok) return '';
+          const text = await res.text();
+          if (text.startsWith('{"error"') || text.startsWith('SCRAPE_BLOCKED')) return '';
+          return text;
+        } catch {
+          return '';
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      })
+    );
+
+    // Step 4: Assemble results — keep even if scrape failed
+    return picked
+      .map((r, i) => {
+        const scrapedContent = scraped[i]?.status === 'fulfilled' ? (scraped[i].value || '') : '';
+        const hasContent = scrapedContent.length > 100;
+        return {
+          title: r.title,
+          url: r.url,
+          source: r.source,
+          authorityLevel: r.authorityLevel,
+          content: hasContent
+            ? scrapedContent.substring(0, 3000)
+            : `[自动抓取未成功，请手动查看原文] ${r.url}`,
+        };
+      })
+      .filter(r => r.content && r.content.length > 10);
   };
 
   const copyDraft = () => {
@@ -1839,9 +2194,13 @@ ${combinedContent}
     ];
     // Collect all references used
     const refs: { title: string, url: string, source: string, content?: string }[] = [];
+    const extractHost = (url: string): string => {
+      try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+    };
     freeUrls.forEach((u, i) => {
       if (u && u.startsWith('http')) {
-        refs.push({ title: `参考链接 ${i+1}`, url: u, source: `链接${i+1}` });
+        const host = extractHost(u);
+        refs.push({ title: host, url: u, source: host });
       }
     });
     if (freePastedContent) {
@@ -2142,7 +2501,7 @@ ${combinedContent}
                   // Pre-fill form state (needed before analysis for UX)
                   setFreeTitle(title);
                   const urls = refs.map(r => r.url).filter(u => u && u.startsWith('http'));
-                  setFreeUrls(urls.length > 0 ? urls.slice(0, 3) : ['']);
+                  setFreeUrls(urls.length > 0 ? urls : ['']);
                   setFreePastedContent('');
                   setFreePastedContent2('');
                   setFreeStyle('fact_first');
@@ -2213,8 +2572,8 @@ ${combinedContent}
                   </div>
                   <div className="flex flex-col gap-3">
                     <div className="flex justify-between items-end">
-                      <label className="field-label">参考链接 ({freeUrls.length}/3)</label>
-                      {freeUrls.length < 3 && (
+                      <label className="field-label">参考链接 ({freeUrls.length})</label>
+                      {freeUrls.length < 6 && (
                         <button 
                           onClick={() => setFreeUrls([...freeUrls, ''])}
                           className="text-[0.6rem] bg-ink text-white px-2 py-0.5 font-bold hover:bg-accent transition-colors"
@@ -2633,7 +2992,7 @@ ${combinedContent}
                         <div className="grid grid-cols-1 gap-1.5">
                           {draftReferences.map((ref, i) => (
                             <div key={i} className="flex items-center gap-2 group leading-tight truncate">
-                              <span className="text-[0.55rem] bg-ink/5 px-1 rounded text-ink font-bold font-mono min-w-[1.2rem] text-center">[{ref.source || i+1}]</span>
+                              <span className="text-[0.55rem] bg-ink/5 px-1 rounded text-ink font-bold font-mono min-w-[1.2rem] text-center">[{(() => { try { const h = new URL(ref.url).hostname.replace(/^www\./, ''); return h.length > 25 ? h.substring(0,23)+'…' : h; } catch { return ref.source || i+1; } })()}]</span>
                               {ref.url && ref.url !== '#' ? (
                                 <a 
                                   href={ref.url} 
@@ -2701,7 +3060,8 @@ ${combinedContent}
                           <div className="text-[2.5rem] mb-4 opacity-50">🔍</div>
                           <div className="text-[0.7rem] leading-relaxed max-w-[200px]">
                             点击下方 <span className="text-accent font-bold">"溯源核查"</span><br/>
-                            AI 将根据主辅信源比对核实<br/>
+                            AI 将自动检索权威信源<br/>
+                            与主辅信源交叉比对核实<br/>
                             标记潜在错误与逻辑偏误
                           </div>
                         </div>
@@ -2710,12 +3070,42 @@ ${combinedContent}
                           {factcheckItems}
                         </div>
                       )}
+
+                      {/* Auto-retrieved independent sources */}
+                      {autoRetrievedSources.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-border">
+                          <details open>
+                            <summary className="text-[0.6rem] font-bold text-blue-700 uppercase tracking-wider cursor-pointer mb-3 flex items-center gap-1.5">
+                              <span>🤖</span> 自动检索信源 ({autoRetrievedSources.length} 个)
+                            </summary>
+                            <div className="space-y-2 mt-2">
+                              {autoRetrievedSources.map((src, i) => {
+                                const levelLabel = src.authorityLevel === 'high' ? '一级权威' : '二级可信';
+                                const levelBg = src.authorityLevel === 'high' ? 'bg-green-50' : 'bg-blue-50';
+                                const levelText = src.authorityLevel === 'high' ? 'text-green-700' : 'text-blue-600';
+                                return (
+                                  <a key={i} href={src.url} target="_blank" rel="noreferrer"
+                                    className="block text-[0.6rem] p-2 bg-white rounded border border-blue-100 hover:border-blue-300 transition-colors no-underline">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className={`text-[0.5rem] font-bold px-1 py-0.5 rounded ${levelBg} ${levelText}`}>
+                                        {levelLabel}
+                                      </span>
+                                      <span className="font-bold text-ink truncate flex-1">{src.title}</span>
+                                    </div>
+                                    <div className="text-muted truncate">{src.source}</div>
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-            
+
             <div className="draft-footer p-3 md:p-[8px_20px] bg-cream border-t border-border flex flex-col md:flex-row justify-between items-center gap-2 md:gap-4">
               <div className="flex items-center gap-4 md:gap-[15px]">
                 <div className="font-mono text-[0.65rem] md:text-[0.75rem] text-gold font-semibold uppercase">{draftMetaInfo}</div>
