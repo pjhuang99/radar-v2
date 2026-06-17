@@ -1,5 +1,5 @@
 import express from "express";
-import { registerSharedRoutes } from "../lib/shared-routes";
+import { registerSharedRoutes } from "./_lib/shared-routes";
 
 const app = express();
 registerSharedRoutes(app);
