@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
-import { registerSharedRoutes } from "./api/shared-routes";
+import { registerSharedRoutes } from "./lib/shared-routes";
 
 dotenv.config();
 
