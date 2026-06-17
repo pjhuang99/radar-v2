@@ -122,7 +122,8 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
       setAnySelected(applySmartDefaults(data.results));
     } else {
       setAnyResults([]);
-      setAnyWarning('AnySearch 搜索失败');
+      const reason = anyP.reason?.message || String(anyP.reason);
+      setAnyWarning(`AnySearch 搜索失败: ${reason}`);
       setAnySelected(new Set());
     }
 
@@ -134,7 +135,8 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
       setSinaSelected(applySmartDefaults(data.results));
     } else {
       setSinaResults([]);
-      setSinaWarning('新浪搜索失败');
+      const reason = sinaP.reason?.message || String(sinaP.reason);
+      setSinaWarning(`新浪搜索失败: ${reason}`);
       setSinaSelected(new Set());
     }
 

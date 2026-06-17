@@ -142,6 +142,20 @@ function getDb(): ReturnType<typeof getFirestore> | null {
 export function registerSharedRoutes(app: express.Express) {
   app.use(express.json());
 
+  // ── Health / Debug ─────────────────────────────────────────────────────
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      env: {
+        ANYSEARCH_API_KEY: process.env.ANYSEARCH_API_KEY ? `set (${process.env.ANYSEARCH_API_KEY.substring(0, 8)}...)` : "MISSING",
+        DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ? "set" : "MISSING",
+        ADMIN_PIN: process.env.ADMIN_PIN ? "set" : "MISSING",
+      },
+      node: process.version,
+      ts: new Date().toISOString(),
+    });
+  });
+
   // ── RSS Proxy ────────────────────────────────────────────────────────────
   const rssParser = new Parser({
     headers: {
@@ -401,6 +415,7 @@ export function registerSharedRoutes(app: express.Express) {
 
   // ── Topic Search (AnySearch / Sina / Jina) ───────────────────────────────
   app.post("/api/search-topic", async (req, res) => {
+    try {
     const { topic, freshness = "month", engine = "anysearch" } = req.body;
     if (!topic || typeof topic !== "string" || topic.trim().length === 0) {
       return res.status(400).json({ error: "Topic is required" });
@@ -409,11 +424,12 @@ export function registerSharedRoutes(app: express.Express) {
     const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || "";
     const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
 
-    console.log(`[SearchTopic] Query: "${topic}" (freshness=${freshness}, engine=${engine})`);
+    console.log(`[SearchTopic] Query: "${topic}" (freshness=${freshness}, engine=${engine}, anysearchKey=${ANYSEARCH_KEY ? "set" : "missing"}, deepseekKey=${DEEPSEEK_KEY ? "set" : "missing"})`);
 
     // ── Step 1: Search ────────────────────────────────────────────────────
     let rawResults: SearchResultRaw[] = [];
     let usedAnySearch = false;
+    const SEARCH_TIMEOUT = 7000; // keep under Vercel Hobby 10s limit
 
     if (engine === "sina") {
       try {
@@ -423,7 +439,7 @@ export function registerSharedRoutes(app: express.Express) {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://search.sina.com.cn/",
           },
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT),
         });
         if (sinaRes.ok) {
           const data = await sinaRes.json();
@@ -460,7 +476,7 @@ export function registerSharedRoutes(app: express.Express) {
             Authorization: `Bearer ${ANYSEARCH_KEY}`,
           },
           body: JSON.stringify({ query, max_results: 12 }),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT),
         });
 
         if (searchRes.ok) {
@@ -490,7 +506,7 @@ export function registerSharedRoutes(app: express.Express) {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/plain",
           },
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT),
         });
         if (jinaRes.ok) {
           const md = await jinaRes.text();
@@ -578,7 +594,7 @@ ${itemsForEval}
             temperature: 0.1,
             response_format: { type: "json_object" },
           }),
-          signal: AbortSignal.timeout(30000),
+          signal: AbortSignal.timeout(SEARCH_TIMEOUT),
         });
 
         if (dsRes.ok) {
@@ -620,6 +636,10 @@ ${itemsForEval}
       returned: finalResults.length,
       usedAnySearch,
     });
+    } catch (err: any) {
+      console.error("[SearchTopic] Unhandled error:", err.message, err.stack);
+      res.status(500).json({ error: err.message || "Search failed", stack: err.stack });
+    }
   });
 
   // ── Admin: Get logs ─────────────────────────────────────────────────────
