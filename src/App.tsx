@@ -477,15 +477,16 @@ export default function App() {
     articleBody: string = '',
     operator: string = activeOperator || 'unknown'
   ) => {
-    // 统一并过滤非"生成文章"的操作
+    // 统一动作名称
     let finalAction = action;
     if (action === '自由创作写作' || action === '自由写作') {
       finalAction = '自由写作';
     } else if (action === '开始排版写作' || action === '开始创作') {
       finalAction = '开始创作';
-    } else {
-      // 忽略此日志（不记录事实核查、AI选题分析、草稿保存等行为）
-      return;
+    } else if (action === 'AI选题分析' || action === '选题分析') {
+      finalAction = 'AI选题分析';
+    } else if (action === '保存到草稿箱' || action === '保存草稿') {
+      finalAction = '保存草稿';
     }
 
     // If the operator is not the automated system-bot, use the configured activeOperator
@@ -583,9 +584,9 @@ export default function App() {
     
     adminLogs.forEach(log => {
       if (log.action === 'AI选题分析') counts.analysis++;
-      else if (log.action === '开始排版写作' || log.action === '自由创作写作') counts.writing++;
+      else if (log.action === '开始创作' || log.action === '自由写作') counts.writing++;
       else if (log.action === '事实核查') counts.factcheck++;
-      else if (log.action === '保存到草稿箱') counts.drafts++;
+      else if (log.action === '保存草稿') counts.drafts++;
 
       if (log.draftMeta) {
         const stanceNames = [

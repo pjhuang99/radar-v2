@@ -115,13 +115,20 @@ const HOTLIST_TYPE_MAP: Record<string, { vvhan: string; reall: string; title: st
 
 let _db: ReturnType<typeof getFirestore> | null = null;
 
+/** In-memory buffer so logs survive Firestore outages / cold starts */
+const _memoryLogs: any[] = [];
+const MAX_MEMORY_LOGS = 500;
+
 function getDb(): ReturnType<typeof getFirestore> | null {
   if (_db) return _db;
   try {
     const configPath = path.join(process.cwd(), "firebase-applet-config.json");
     if (fs.existsSync(configPath)) {
       const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-      _db = getFirestore(initializeApp(firebaseConfig));
+      const databaseId = firebaseConfig.firestoreDatabaseId || "(default)";
+      delete firebaseConfig.firestoreDatabaseId; // not a valid FirebaseApp option
+      _db = getFirestore(initializeApp(firebaseConfig), databaseId);
+      console.log(`[Firebase] Initialized Firestore (db=${databaseId}, project=${firebaseConfig.projectId})`);
       return _db;
     }
   } catch (e) {
@@ -617,19 +624,39 @@ ${itemsForEval}
 
   // ── Admin: Get logs ─────────────────────────────────────────────────────
   app.get("/api/admin/logs", async (_req, res) => {
-    const firestoreDb = getDb();
-    if (!firestoreDb) return res.json({ data: [] });
-    try {
-      const logsCol = collection(firestoreDb, "audit_logs");
-      const q = query(logsCol, orderBy("epoch", "desc"), limit(200));
-      const snapshot = await getDocs(q);
-      const logs: any[] = [];
-      snapshot.forEach((docSnap) => logs.push(docSnap.data()));
-      res.json({ data: logs });
-    } catch (error: any) {
-      console.error("[Admin] Get audit logs failed:", error.message);
-      res.status(500).json({ error: error.message });
+    const logs: any[] = [];
+    const seenIds = new Set<string>();
+
+    // 1. Always include in-memory buffer first (most recent)
+    for (const entry of _memoryLogs) {
+      if (!seenIds.has(entry.id)) {
+        logs.push(entry);
+        seenIds.add(entry.id);
+      }
     }
+
+    // 2. Merge Firestore if available
+    const firestoreDb = getDb();
+    if (firestoreDb) {
+      try {
+        const logsCol = collection(firestoreDb, "audit_logs");
+        const q = query(logsCol, orderBy("epoch", "desc"), limit(200));
+        const snapshot = await getDocs(q);
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (!seenIds.has(data.id)) {
+            logs.push(data);
+            seenIds.add(data.id);
+          }
+        });
+      } catch (error: any) {
+        console.error("[Admin] Firestore read failed, returning memory logs:", error.message);
+      }
+    }
+
+    // Sort by epoch descending
+    logs.sort((a, b) => (b.epoch || 0) - (a.epoch || 0));
+    res.json({ data: logs.slice(0, MAX_MEMORY_LOGS) });
   });
 
   // ── Admin: Write audit log ──────────────────────────────────────────────
@@ -652,13 +679,21 @@ ${itemsForEval}
       articleBody: newLog.articleBody || "",
     };
 
+    // Always buffer in memory
+    _memoryLogs.unshift(logEntry);
+    if (_memoryLogs.length > MAX_MEMORY_LOGS) _memoryLogs.length = MAX_MEMORY_LOGS;
+
+    // Persist to Firestore when available
     const firestoreDb = getDb();
     if (firestoreDb) {
       try {
         await setDoc(doc(firestoreDb, "audit_logs", logEntry.id), logEntry);
+        console.log(`[Admin] Log persisted to Firestore: ${logEntry.id}`);
       } catch (error: any) {
-        console.error("[Admin] Save audit log failed:", error.message);
+        console.error("[Admin] Firestore write failed (log kept in memory):", error.message);
       }
+    } else {
+      console.warn("[Admin] Firestore unavailable, log stored in memory only");
     }
 
     res.json({ success: true, log: logEntry });
@@ -666,9 +701,12 @@ ${itemsForEval}
 
   // ── Admin: Clear logs ───────────────────────────────────────────────────
   app.post("/api/admin/clear", async (_req, res) => {
+    // Always clear memory buffer
+    _memoryLogs.length = 0;
+
     const firestoreDb = getDb();
     if (!firestoreDb) {
-      return res.json({ success: true, warning: "Firestore not initialized" });
+      return res.json({ success: true, warning: "Firestore not initialized (memory cleared)" });
     }
     try {
       const logsCol = collection(firestoreDb, "audit_logs");
