@@ -394,7 +394,8 @@ export default function App() {
     e.preventDefault();
     const pin = adminPasswordInput.trim();
     // Admin PIN read from build-time env var (Vite define), with fallback
-    const validPin = (typeof process !== 'undefined' && (process as any).env?.ADMIN_PIN) || 'radar_admin_2026';
+    // @ts-ignore — Vite define replaces this literal at build time
+const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
     if (pin === validPin) {
       setShowAdminPasswordModal(false);
       setAdminPasswordInput('');
