@@ -322,6 +322,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
   const [showDraftsList, setShowDraftsList] = useState(false);
+  const [citationTooltip, setCitationTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -333,6 +334,37 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('commentary_radar_drafts', JSON.stringify(drafts));
   }, [drafts]);
+
+  // Auto-scrape draftReferences URLs that lack content (for [链接N] hover tooltips)
+  useEffect(() => {
+    const unscraped = draftReferences.filter(r => r.url && r.url.startsWith('http') && (!r.content || r.content.length < 100));
+    if (!unscraped.length) return;
+
+    let cancelled = false;
+    (async () => {
+      const fresh = await Promise.all(unscraped.map(async (r) => {
+        try {
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 12000);
+          const res = await fetch(`/api/scrape?url=${encodeURIComponent(r.url)}`, { signal: ctrl.signal });
+          clearTimeout(tid);
+          if (!res.ok) return '';
+          const text = await res.text();
+          if (text.startsWith('{"error"') || text.includes('SCRAPE_BLOCKED')) return '';
+          return text.substring(0, 3000);
+        } catch { return ''; }
+      }));
+      if (cancelled) return;
+      setDraftReferences(prev => prev.map((ref, i) => {
+        const idx = unscraped.findIndex(r => r.url === ref.url);
+        if (idx >= 0 && fresh[idx]) {
+          return { ...ref, content: fresh[idx] };
+        }
+        return ref;
+      }));
+    })();
+    return () => { cancelled = true; };
+  }, [draftReferences.map(r => r.url).join(',')]);
 
   useEffect(() => {
     localStorage.setItem('commentary_radar_rss_feeds_v4', JSON.stringify(rssFeeds));
@@ -1163,6 +1195,10 @@ ${titles}
             sourceContent = text.substring(0, 5000);
             setCurrentSourceContent(sourceContent);
             setCurrentSourceUrl(url);
+            // Also store in draftReferences for [链接N] hover tooltips
+            setDraftReferences(prev => prev.map((ref, i) =>
+              (i === 0 || ref.url === url) ? { ...ref, content: text.substring(0, 3000) } : ref
+            ));
             setDraftBody(`PHASE 1: [${sourceName || '原文'}] 提取成功，正在聚合核心事实...`);
           } else {
             console.warn("直接抓取内容过短，将尝试搜索补充");
@@ -1280,22 +1316,28 @@ ${titles}
         setDraftReferences(searchResults.map(r => ({ title: r.title, url: r.url, source: r.source })));
         const displayList = searchResults.map((r, i) => `${i+1}. 【${r.source}】${r.title}\n   🔗 ${r.url}`).join('\n\n');
         setDraftBody(`PHASE 1: 已通过 ${searchLabel} 找到以下权威信源：\n\n${displayList}\n\n正在聚合核心事实...`);
-        
-        // Fetch content from top results
-        const topUrls = searchResults.slice(0, 2).map(r => r.url);
-        const contents = await Promise.all(topUrls.map(async (u) => {
+
+        // Fetch content from ALL results (up to 6) and store individually
+        const allUrls = searchResults.slice(0, 6).map(r => r.url);
+        const contents = await Promise.all(allUrls.map(async (u) => {
           try {
             const r = await fetch(`/api/scrape?url=${encodeURIComponent(u)}`);
             if (!r.ok) return '';
             const text = await r.text();
             if (text === "SCRAPE_BLOCKED_BY_WAF") return '';
-            // Process text into numbered paragraphs for better AI citation
             return text.split('\n')
               .map(p => p.trim())
               .filter(p => p.length > 20)
               .map((p, idx) => `[段落${idx + 1}] ${p}`)
               .join('\n');
           } catch { return ''; }
+        }));
+        // Store individual contents in draftReferences for hover tooltips
+        setDraftReferences(prev => prev.map((ref, i) => {
+          if (i < contents.length && contents[i]) {
+            return { ...ref, content: contents[i] };
+          }
+          return ref;
         }));
         sourceContent = contents.filter(c => c).map((c, i) => `【参考信源 ${i+1}】：\n${c.substring(0, 3000)}`).join('\n\n');
         setCurrentSourceContent(sourceContent);
@@ -1699,8 +1741,16 @@ ${draftBody}`;
           label: '🔗 原始素材对照'
         });
       }
-      const hasSpecificUrl = sourceLinks.some(l => l.link.startsWith('http'));
-      const primaryLink = sourceLinks[0]?.link || '';
+      // Deduplicate by URL, keeping the one with the more informative label
+      const seenUrls = new Set<string>();
+      const dedupedLinks: { link: string; label: string }[] = [];
+      for (const sl of sourceLinks) {
+        if (!sl.link || seenUrls.has(sl.link)) continue;
+        seenUrls.add(sl.link);
+        dedupedLinks.push(sl);
+      }
+      const hasSpecificUrl = dedupedLinks.some(l => l.link.startsWith('http'));
+      const primaryLink = dedupedLinks[0]?.link || '';
 
       if (isError || isWarning) {
         const severityTag = isError ? 'ERR' : 'WARN';
@@ -1719,7 +1769,7 @@ ${draftBody}`;
               </div>
             </div>
             <div className="flex gap-2 ml-8 flex-wrap">
-              {sourceLinks.map((sl, i) => (
+              {dedupedLinks.map((sl, i) => (
                 <a key={i} className="fact-link" href={sl.link} target="_blank" rel="noreferrer">{sl.label}</a>
               ))}
               {!hasSpecificUrl && (
@@ -1730,14 +1780,21 @@ ${draftBody}`;
         );
       } else if (isOk) {
         items.push(
-          <div className="fact-ok flex items-center gap-2 flex-wrap" key={index}>
-            <span className="text-green">●</span>
-            <span className="flex-1">核实一致：{p[1]}</span>
-            {sourceLinks.map((sl, i) => (
-              <a key={i} className="text-[0.65rem] text-blue hover:underline" href={sl.link} target="_blank" rel="noreferrer">
-                {sl.link.startsWith('http') ? '查看外部溯源' : '溯源'}
-              </a>
-            ))}
+          <div className="fact-item group" key={index}>
+            <div className="flex items-start gap-2 mb-2">
+              <span className="bg-green text-white text-[0.6rem] px-1.5 py-0.5 font-bold mt-1">OK</span>
+              <div className="flex-1">
+                <div className="fact-corrected text-green">核实一致：{p[1]}</div>
+              </div>
+            </div>
+            <div className="flex gap-2 ml-8 flex-wrap">
+              {dedupedLinks.map((sl, i) => (
+                <a key={i} className="fact-link" href={sl.link} target="_blank" rel="noreferrer">{sl.label}</a>
+              ))}
+              {!hasSpecificUrl && (
+                <a className="fact-link bg-muted/10 text-muted" href={`https://search.sina.com.cn/search?q=${encodeURIComponent(p[1])}&tp=news`} target="_blank" rel="noreferrer">🌐 联机检索</a>
+              )}
+            </div>
           </div>
         );
       }
@@ -1886,36 +1943,38 @@ ${draftBody}`;
         const ctrl = new AbortController();
         const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
         try {
-          const res = await fetch(`https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(query)}&pf=0&ps=0&page=1&sort=time&num=8&ie=utf-8`, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://search.sina.com.cn/" },
+          const res = await fetch(`/api/sina-search?q=${encodeURIComponent(query)}`, {
             signal: ctrl.signal,
           });
           if (!res.ok) return [] as RawResult[];
           const data = await res.json();
-          return ((data?.result?.list || []) as any[]).map((r: any) =>
-            mapResult(r.origin_title || r.title || '', r.url || '', r.media || '')
-          );
+          return ((data?.result?.list || []) as any[]).map((r: any) => {
+            const r2 = mapResult(r.origin_title || r.title || '', r.url || '', r.media || '');
+            (r2 as any).snippet = (r.intro || '').replace(/<[^>]+>/g, '').trim();
+            return r2;
+          });
         } catch { return [] as RawResult[]; }
         finally { clearTimeout(tid); }
       })(),
-      // Engine 2: AnySearch (broader coverage, needs API key)
+      // Engine 2: AnySearch (proxied through backend)
       (async () => {
-        if (!ANYSEARCH_KEY) return [] as RawResult[];
         const ctrl = new AbortController();
         const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
         try {
-          const res = await fetch('https://api.anysearch.com/v1/search', {
+          const res = await fetch('/api/anysearch-proxy', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ANYSEARCH_KEY}` },
-            body: JSON.stringify({ query, max_results: 8 }),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query }),
             signal: ctrl.signal,
           });
           if (!res.ok) return [] as RawResult[];
           const data = await res.json();
           const results = data?.data?.results || data?.results || [];
-          return (results as any[]).map((r: any) =>
-            mapResult(r.title || '', r.url || '', r.source || (r.url ? new URL(r.url).hostname : ''))
-          );
+          return (results as any[]).map((r: any) => {
+            const r2 = mapResult(r.title || '', r.url || '', r.source || (r.url ? new URL(r.url).hostname : ''));
+            (r2 as any).snippet = r.snippet || r.content || r.description || '';
+            return r2;
+          });
         } catch { return [] as RawResult[]; }
         finally { clearTimeout(tid); }
       })(),
@@ -1979,22 +2038,22 @@ ${draftBody}`;
       })
     );
 
-    // Step 4: Assemble results — keep even if scrape failed
+    // Step 4: Assemble results — prefer scraped full text, fall back to search snippet
     return picked
       .map((r, i) => {
         const scrapedContent = scraped[i]?.status === 'fulfilled' ? (scraped[i].value || '') : '';
-        const hasContent = scrapedContent.length > 100;
+        const hasFullContent = scrapedContent.length > 100;
         return {
           title: r.title,
           url: r.url,
           source: r.source,
           authorityLevel: r.authorityLevel,
-          content: hasContent
+          content: hasFullContent
             ? scrapedContent.substring(0, 3000)
-            : `[自动抓取未成功，请手动查看原文] ${r.url}`,
+            : ((r as any).snippet || '').substring(0, 500), // fall back to search snippet
         };
       })
-      .filter(r => r.content && r.content.length > 10);
+      .filter(r => r.content && r.content.length > 30); // keep if any content available
   };
 
   const copyDraft = () => {
@@ -2018,13 +2077,143 @@ ${draftBody}`;
   };
 
   const renderDraftBody = (text: string) => {
-    // 1. Line breaks
-    let html = text.replace(/\n/g, '<br>');
-    // 2. Special handling for source tags and other citations
-    // We style [链接X], [补充素材X], [来源X], [核查X], [推论], [研判] etc.
+    if (!text) return null;
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+    // Extract Chinese 2-4 char n-grams (longer first) + English 2+ + numbers
+    const extractKeywords = (t: string): { kw: string; w: number }[] => {
+      const seen = new Set<string>();
+      const all: { kw: string; w: number }[] = [];
+      const cnBlocks = t.match(/[一-鿿]+/g) || [];
+      for (const block of cnBlocks) {
+        for (let len = 4; len >= 2; len--) {
+          for (let i = 0; i <= block.length - len; i++) {
+            const ngram = block.substring(i, i + len);
+            if (!seen.has(ngram)) { seen.add(ngram); all.push({ kw: ngram, w: len === 2 ? 1 : len === 3 ? 2 : 3 }); }
+          }
+        }
+      }
+      (t.match(/[A-Za-z]{2,}/g) || []).forEach(k => { if (!seen.has(k)) { seen.add(k); all.push({ kw: k, w: 1 }); } });
+      (t.match(/\d+(?:\.\d+)?\s*[万亿千百%％倍亿美欧日港元人民币英镑美元欧元]?/g) || []).forEach(k => { if (!seen.has(k)) { seen.add(k); all.push({ kw: k, w: 5 }); } });
+      return all.slice(0, 30);
+    };
+
+    // Score sentences by keyword overlap, return top 3 matching (score >= 3)
+    const findRelevant = (query: string, content: string): string => {
+      let clean = content.replace(/\[段落\d+\]\s*/g, '');
+      clean = clean.replace(/^(Title|URL Source|Published Time|Markdown Content|Author|Tags|Description):[^\n]*\n*/gim, '');
+      clean = clean.replace(/\n{3,}/g, '\n\n').trim();
+      const kw = extractKeywords(query);
+      if (!kw.length) return '';
+
+      const sentences = clean.split(/[。！？!?\n；;]+/).map(s => s.trim()).filter(s => s.length > 8);
+      if (sentences.length <= 1) return '';
+
+      const scored = sentences.map(s => {
+        let score = 0;
+        for (const { kw: k, w } of kw) { if (s.includes(k)) score += w; }
+        return { s, score };
+      });
+      scored.sort((a, b) => b.score - a.score);
+      const top = scored.filter(x => x.score >= 3).slice(0, 3);
+      if (!top.length) return '';
+      const stripTags = (s: string) => s.replace(/\[[^\]]*?(?:链接\d+|补充素材\d+|来源|共同事实|素材未提及|资料未提及|差异\/独特|核查|视角|推论|分析|研判|点评|思考|总结)[^\]]*?\]/g, '').replace(/\s+/g, ' ').trim();
+      return top.map(x => `▸ ${stripTags(x.s)}`).join('\n');
+    };
+
+    const getContext = (textBefore: string): string => {
+      if (!textBefore) return '';
+      const parts = textBefore.split(/[。！？!?\n]+/).filter(s => s.trim());
+      if (!parts.length) return '';
+      return parts.slice(-2).join('。').slice(-200);
+    };
+
+    // ── Parse citations ──────────────────────────────────────────────────
     const citationRegex = /\[([^\]]*?(?:链接\d+|补充素材\d+|来源|共同事实|素材未提及|资料未提及|差异\/独特|核查|视角|推论|分析|研判|点评|思考|总结)[^\]]*?)\]/g;
-    html = html.replace(citationRegex, '<span class="source-inline-tag" title="溯源核查标签">[$1]</span>');
-    return { __html: html };
+    const segments: { type: 'text' | 'citation'; content: string }[] = [];
+    let lastIndex = 0, match;
+    while ((match = citationRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) segments.push({ type: 'text', content: text.substring(lastIndex, match.index) });
+      segments.push({ type: 'citation', content: match[1] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) segments.push({ type: 'text', content: text.substring(lastIndex) });
+
+    // Split combined citations like 链接1，链接2
+    const split: { type: 'text' | 'citation'; content: string }[] = [];
+    for (const seg of segments) {
+      if (seg.type === 'citation' && /链接\d+/.test(seg.content)) {
+        const parts = seg.content.split(/[，,、；;]+/).map(s => s.trim()).filter(Boolean);
+        if (parts.length > 1) { for (const p of parts) split.push({ type: 'citation', content: p }); continue; }
+      }
+      split.push(seg);
+    }
+
+    const getRefContent = (citation: string): string | null => {
+      const m = citation.match(/链接(\d+)/);
+      if (!m) return null;
+      const idx = parseInt(m[1]) - 1;
+      const ref = draftReferences[idx];
+      if (!ref?.content || ref.content.length < 100) return null;
+      return ref.content;
+    };
+
+    // ── Render ───────────────────────────────────────────────────────────
+    return (
+      <>
+        {split.map((seg, i) => {
+          if (seg.type === 'text') {
+            const lines = seg.content.split('\n');
+            return <span key={i}>{lines.map((line, j) => <React.Fragment key={j}>{j > 0 && <br />}{line}</React.Fragment>)}</span>;
+          }
+
+          const content = getRefContent(seg.content);
+          if (!content) {
+            // No content available → show tooltip with URL
+            const m = seg.content.match(/链接(\d+)/);
+            const ref = m ? draftReferences[parseInt(m[1]) - 1] : null;
+            return (
+              <span
+                key={i}
+                className="source-inline-tag"
+                onMouseEnter={(e) => {
+                  const rect = (e.target as HTMLElement).getBoundingClientRect();
+                  setCitationTooltip({
+                    text: `📰 ${ref?.title || ref?.source || seg.content}\n————————————————\n⚠ 该信源全文未能抓取（可能需付费或网站限制）\n🔗 ${ref?.url || ''}`,
+                    x: rect.left + rect.width / 2, y: rect.bottom + 6,
+                  });
+                }}
+                onMouseLeave={() => setCitationTooltip(null)}
+              >[{seg.content}]</span>
+            );
+          }
+
+          // Content available → hover to show relevant sentences
+          let prevText = '';
+          for (let j = i - 1; j >= 0; j--) { if (split[j].type === 'text') { prevText = split[j].content; break; } }
+          const ctx = getContext(prevText);
+          const label = (() => {
+            const m = seg.content.match(/链接(\d+)/);
+            if (!m) return seg.content;
+            const ref = draftReferences[parseInt(m[1]) - 1];
+            return ref?.title || ref?.source || `链接${m[1]}`;
+          })();
+          const relevant = ctx ? findRelevant(ctx, content) : '';
+          const preview = relevant || '未精确匹配到相关内容';
+          return (
+            <span
+              key={i}
+              className="source-inline-tag"
+              onMouseEnter={(e) => {
+                const rect = (e.target as HTMLElement).getBoundingClientRect();
+                setCitationTooltip({ text: `📰 ${label}\n————————————————\n${preview}`, x: rect.left + rect.width / 2, y: rect.bottom + 6 });
+              }}
+              onMouseLeave={() => setCitationTooltip(null)}
+            >[{seg.content}]</span>
+          );
+        })}
+      </>
+    );
   };
 
   const groupedRawItems = rawItems.reduce((acc: any, item) => {
@@ -2272,7 +2461,6 @@ ${combinedContent}
           >
             📁 我的草稿箱 ({drafts.length})
           </button>
-          <div className="hidden md:block font-mono text-[0.7rem]">{clock}</div>
         </div>
       </div>
 
@@ -2331,18 +2519,6 @@ ${combinedContent}
 
         <div className="hidden md:flex flex-1" />
 
-        <div className={`${showToolbarSettings ? 'flex' : 'hidden md:flex'} w-full md:w-auto mt-2 md:mt-0 key-input-wrap !mb-0 items-center gap-2 border-t md:border-t-0 border-border pt-2 md:pt-0`}>
-          <label className="text-[0.6rem] text-muted font-bold uppercase whitespace-nowrap">搜索源</label>
-          <select 
-            className="key-input !py-1 w-full md:w-auto" 
-            value={searchEngine}
-            onChange={(e) => handleSearchEngineChange(e.target.value)}
-          >
-            <option value="bing">深度搜索 (Bing/Jina/DeepSeek)</option>
-            <option value="google">联网搜索 (Google/Gemini)</option>
-            <option value="sina">新浪新闻搜索 (Sina)</option>
-          </select>
-        </div>
       </div>
 
       <div className="layout">
@@ -2461,7 +2637,6 @@ ${combinedContent}
 
         <div className="main-col">
           <div className="flex justify-between items-center mb-4">
-            <div className="section-title">自由创作中心</div>
             {/* Mode Switch */}
             <div className="flex border border-border rounded-sm overflow-hidden">
               <button
@@ -2546,7 +2721,6 @@ ${combinedContent}
           ) : (
           <div id="freeWriteSection" className="free-write-section !border-t-0 !pt-0 !pb-10 !bg-transparent">
             <div className="flex justify-between items-center mb-4">
-              <div className="section-title">自由创作中心</div>
               {freeStep === 2 && (
                 <button 
                   className="text-[0.65rem] text-muted hover:text-ink underline uppercase font-mono"
@@ -2976,7 +3150,7 @@ ${combinedContent}
             
             <div className="draft-content-layout">
               <div className={`draft-main-area ${draftTab !== 'content' ? 'hidden md:flex' : 'flex'}`}>
-                <div className="draft-body" dangerouslySetInnerHTML={renderDraftBody(draftBody)}></div>
+                <div className="draft-body">{renderDraftBody(draftBody)}</div>
               </div>
 
               <div className={`draft-side-area ${draftTab !== 'sources' ? 'hidden md:flex' : 'flex'}`}>
@@ -2992,7 +3166,7 @@ ${combinedContent}
                         <div className="grid grid-cols-1 gap-1.5">
                           {draftReferences.map((ref, i) => (
                             <div key={i} className="flex items-center gap-2 group leading-tight truncate">
-                              <span className="text-[0.55rem] bg-ink/5 px-1 rounded text-ink font-bold font-mono min-w-[1.2rem] text-center">[{(() => { try { const h = new URL(ref.url).hostname.replace(/^www\./, ''); return h.length > 25 ? h.substring(0,23)+'…' : h; } catch { return ref.source || i+1; } })()}]</span>
+                              <span className="text-[0.55rem] bg-ink/5 px-1 rounded text-ink font-bold font-mono min-w-[1.2rem] text-center">[链接{i + 1}]</span>
                               {ref.url && ref.url !== '#' ? (
                                 <a 
                                   href={ref.url} 
@@ -3686,7 +3860,7 @@ ${combinedContent}
               {/* Article Content Viewer */}
               <div className="flex-1 overflow-y-auto p-6 bg-paper selection:bg-accent selection:text-paper font-sans">
                 <div className="prose max-w-none text-ink text-sm">
-                  <div className="draft-body leading-relaxed whitespace-pre-wrap font-sans text-xs sm:text-sm" dangerouslySetInnerHTML={renderDraftBody(selectedLogCache.articleBody || '')}></div>
+                  <div className="draft-body leading-relaxed whitespace-pre-wrap font-sans text-xs sm:text-sm">{renderDraftBody(selectedLogCache.articleBody || '')}</div>
                 </div>
               </div>
 
@@ -3866,6 +4040,22 @@ ${combinedContent}
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Citation hover tooltip */}
+      {citationTooltip && (
+        <div
+          className="fixed z-[9999] max-w-[360px] p-3 bg-[#fdfaf3] border border-ink shadow-lg pointer-events-none"
+          style={{
+            left: Math.min(Math.max(citationTooltip.x - 130, 8), window.innerWidth - 370),
+            top: Math.min(citationTooltip.y + 8, window.innerHeight - 220),
+          }}
+        >
+          <div className="text-[0.65rem] leading-relaxed whitespace-pre-line text-ink font-sans">
+            {citationTooltip.text}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -40,7 +40,7 @@ const TAB_LABELS: Record<TabKey, string> = {
 
 export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelProps) {
   const [topic, setTopic] = useState('');
-  const [freshness, setFreshness] = useState<string>('month');
+  const [freshness, setFreshness] = useState<string>('day');
   const [step, setStep] = useState<'input' | 'searching' | 'results'>('input');
   const [activeTab, setActiveTab] = useState<TabKey>('anysearch');
 
@@ -234,6 +234,16 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
     return 'text-red-500';
   };
 
+  // Format date string to readable YYYY-MM-DD
+  const fmtDate = (d: string): string => {
+    const clean = d.replace(/[年月]/g, '-').replace(/日/, '').replace(/\s.*/, '').trim();
+    const parsed = new Date(clean);
+    if (!isNaN(parsed.getTime())) {
+      return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+    }
+    return clean.length >= 10 ? clean.substring(0, 10) : clean;
+  };
+
   // Render a single result card (reusable across tabs)
   const renderCard = (r: SearchResult, i: number, selected: Set<number>, expanded: Set<number>) => {
     const isSelected = selected.has(i);
@@ -271,9 +281,7 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
                 {r.source}
               </span>
               {r.date && (
-                <span className="text-[0.55rem] text-muted font-mono">
-                  {r.date}
-                </span>
+                <span className="text-[0.55rem] text-muted font-mono">{fmtDate(r.date)}</span>
               )}
               <span
                 className={`text-[0.55rem] font-mono font-bold ml-auto ${getScoreColor(combinedScore)}`}
@@ -351,7 +359,7 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
               <input
                 type="text"
                 className="w-full border border-ink/30 bg-paper px-4 py-3 text-[0.95rem] font-serif placeholder:text-muted/50 focus:border-ink focus:outline-none focus:ring-1 focus:ring-ink/10 transition-all"
-                placeholder="输入选题关键词或一句话描述..."
+                placeholder="输入简短关键词，不要输入长句子"
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
                 onKeyDown={(e) => {
@@ -391,16 +399,26 @@ export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelP
           <div className="flex gap-3 items-center text-[0.65rem] font-mono text-muted flex-wrap">
             <div className="flex items-center gap-1.5">
               <span className="uppercase tracking-wider font-bold">时间</span>
-              <select
-                value={freshness}
-                onChange={(e) => setFreshness(e.target.value)}
-                className="border border-border bg-paper px-2 py-1 text-[0.65rem] focus:border-ink outline-none"
-                disabled={step === 'searching'}
-              >
-                <option value="day">24小时</option>
-                <option value="week">本周</option>
-                <option value="month">本月</option>
-              </select>
+              <div className="flex border border-border rounded-sm overflow-hidden">
+                {[
+                  { value: 'day', label: '24小时' },
+                  { value: 'week', label: '本周' },
+                  { value: 'month', label: '本月' },
+                ].map(({ value, label }) => (
+                  <button
+                    key={value}
+                    disabled={step === 'searching'}
+                    onClick={() => setFreshness(value)}
+                    className={`px-2 py-1 text-[0.65rem] font-bold uppercase tracking-wider transition-all ${
+                      freshness === value
+                        ? 'bg-ink text-paper'
+                        : 'bg-transparent text-muted hover:text-ink'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
