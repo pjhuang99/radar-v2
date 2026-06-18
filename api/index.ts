@@ -370,6 +370,42 @@ app.post("/api/search-topic", async (req, res) => {
   }
 });
 
+// ── Sina Search proxy (used by auto-retrieval) ──────────────────────────
+app.get("/api/sina-search", async (req, res) => {
+  const { q } = req.query;
+  if (!q || typeof q !== "string") return res.status(400).json({ error: "q is required" });
+  try {
+    const url = `https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(q)}&pf=0&ps=0&page=1&sort=time&num=8&ie=utf-8`;
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://search.sina.com.cn/" },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!r.ok) return res.status(502).json({ error: `Sina returned ${r.status}` });
+    res.json(await r.json());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── AnySearch Proxy (used by auto-retrieval) ────────────────────────────
+app.post("/api/anysearch-proxy", async (req, res) => {
+  const { query } = req.body;
+  const key = process.env.ANYSEARCH_API_KEY;
+  if (!key) return res.status(500).json({ error: "ANYSEARCH_API_KEY not configured" });
+  try {
+    const r = await fetch("https://api.anysearch.com/v1/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ query, max_results: 8 }),
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!r.ok) return res.status(502).json({ error: `AnySearch returned ${r.status}` });
+    res.json(await r.json());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Admin: Get logs
 app.get("/api/admin/logs", async (_req, res) => {
   const logs: any[] = []; const seen = new Set<string>();
