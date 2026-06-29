@@ -244,10 +244,10 @@ export default function App() {
 
   // Free Write State
   const [freeTitle, setFreeTitle] = useState('');
-  const [freeUrls, setFreeUrls] = useState<string[]>(['']);
+  const [freeUrls, setFreeUrls] = useState<string[]>(['', '']);
   const [freeAngle, setFreeAngle] = useState('');
   const [freeStyle, setFreeStyle] = useState('fact_first');
-  const [freePersona, setFreePersona] = useState('editor');
+  const [freePersona, setFreePersona] = useState('cause_effect');
   const [freeWordcount, setFreeWordcount] = useState(1000);
   const [freePastedContent, setFreePastedContent] = useState('');
   const [freePastedContent2, setFreePastedContent2] = useState('');
@@ -265,7 +265,7 @@ export default function App() {
   const [customAngleToggle, setCustomAngleToggle] = useState(false);
   const [customAngleInput, setCustomAngleInput] = useState('');
   const [diagStyle, setDiagStyle] = useState('fact_first');
-  const [diagPersona, setDiagPersona] = useState('editor');
+  const [diagPersona, setDiagPersona] = useState('cause_effect');
   const [diagWordcount, setDiagWordcount] = useState(1000);
 
   // Draft State
@@ -2676,11 +2676,11 @@ ${combinedContent}
                   // Pre-fill form state (needed before analysis for UX)
                   setFreeTitle(title);
                   const urls = refs.map(r => r.url).filter(u => u && u.startsWith('http'));
-                  setFreeUrls(urls.length > 0 ? urls : ['']);
+                  setFreeUrls(urls.length > 0 ? urls : ['', '']);
                   setFreePastedContent('');
                   setFreePastedContent2('');
                   setFreeStyle('fact_first');
-                  setFreePersona('editor');
+                  setFreePersona('cause_effect');
                   setFreeWordcount(1000);
 
                   // Switch to direct mode so user sees the progress
@@ -2826,8 +2826,11 @@ ${combinedContent}
                   </AnimatePresence>
                   
                   {!showExtraInputs && (
-                    <div className="text-[0.7rem] text-muted/60 italic font-medium pt-4 bg-muted/5 p-4 border border-dashed border-border rounded">
-                      提示：如果链接（如微信、内网地址）难以抓取，请点击上方展开按钮，手动将文章内容粘贴到补充框内，以便 AI 进行深度研判。
+                    <div
+                      className="text-[0.7rem] text-muted/60 italic font-medium pt-4 bg-muted/5 p-4 border border-dashed border-border rounded cursor-pointer hover:border-ink hover:text-muted transition-colors"
+                      onClick={() => setShowExtraInputs(true)}
+                    >
+                      提示：如果链接（如微信、内网地址）难以抓取，请点击此处或上方展开按钮，手动将文章内容粘贴到补充框内，以便 AI 进行深度研判。
                     </div>
                   )}
                 </div>
@@ -2920,41 +2923,71 @@ ${combinedContent}
                 <div className="free-write-grid !mt-0 border-t border-border pt-6 flex flex-col gap-6">
                   <div className="flex flex-col gap-6 free-write-full">
                     <div className="border-b border-border pb-4">
+                      <label className="field-label">核心观点 / 补充细节 (补充自定义切入点)</label>
+                      <textarea
+                        className="write-num h-24 font-serif"
+                        value={freeAngle}
+                        onChange={(e) => setFreeAngle(e.target.value)}
+                        placeholder="已选视角内容将出现在此，您可以继续修改或补充..."
+                      />
+                    </div>
+                    <div className="border-b border-border pb-4">
                       <label className="field-label">文章模式</label>
-                      <select className="write-num !w-full md:!w-auto" value={freeStyle} onChange={(e) => setFreeStyle(e.target.value)}>
-                        <option value="fact_first">事实优先 (叙事为主)</option>
-                        <option value="oped">理念主导 (理论前瞻)</option>
-                      </select>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { v: 'fact_first', l: '事实优先' },
+                          { v: 'oped', l: '理念主导' },
+                        ].map(m => {
+                          const sel = freeStyle === m.v;
+                          return (
+                            <button
+                              key={m.v}
+                              className={`cat-btn inline-flex items-center gap-1.5 ${sel ? 'border-ink bg-white' : ''}`}
+                              onClick={() => setFreeStyle(m.v)}
+                            >
+                              {sel ? <span className="text-muted text-[0.65rem] leading-none">✓</span> : <span className="inline-block w-2 h-2 rounded-full border border-muted" />}
+                              {m.l}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                     <div className="border-b border-border pb-4">
                       <label className="field-label">写作立场</label>
-                      <select className="write-num !w-full md:!w-auto" value={freePersona} onChange={(e) => setFreePersona(e.target.value)}>
-                        <option value="editor">主流情绪 (公约数视角)</option>
-                        <option value="balance">平衡派 (有褒有贬)</option>
-                        <option value="radical">犀利批判 (打破结构)</option>
-                        <option value="cause_effect">前因后果式解读 (底层逻辑)</option>
-                        <option value="investor">投资者视角 (收益与风险)</option>
-                      </select>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { v: 'editor', l: '主流情绪', tip: '以社会公约数为基调，反映大多数读者的直觉感受与情绪共鸣。不剑走偏锋、不标新立异，追求"大多数人都这么觉得"的天然正当性。适合需要凝聚共识、传递普遍关切的议题。' },
+                          { v: 'balance', l: '平衡派', tip: '先肯定再质疑，或先批评再理解——每论述一个方向，必用"但硬币的另一面是…"收束。拒绝单向度叙事，让正反双方都获得被听见的体面。适合争议性话题、需要展示思考复杂度的场景。' },
+                          { v: 'radical', l: '犀利批判', tip: '不满足于表面解释，直指结构性问题与利益格局。无惧得罪既得利益者，用"真正的问题是…"式句式揭开遮羞布。文风冷峻、不端不装，适合需要打破沉默、推翻常识性谬误的深度评论。' },
+                          { v: 'cause_effect', l: '前因后果', tip: '不急于下结论，先拉长时间轴——这件事的远因是什么？近因是什么？关键转折点在哪？如果A不发生，B还会发生吗？层层剥开因果链条，让读者看清"为什么会这样"而不是只看到"发生了什么"。' },
+                          { v: 'investor', l: '投资者视角', tip: '用资本市场的语言翻译一切：谁是赢家？谁在买单？护城河变宽了还是变窄了？估值逻辑是否被重新定价？不关心表态，只关心损益表。适合财经类选题、商业模式分析、行业格局变动。' },
+                        ].map(p => {
+                          const sel = freePersona === p.v;
+                          return (
+                            <span key={p.v} className="relative group">
+                              <button
+                                className={`cat-btn inline-flex items-center gap-1.5 ${sel ? 'border-ink bg-white' : ''}`}
+                                onClick={() => setFreePersona(p.v)}
+                              >
+                                {sel ? <span className="text-muted text-[0.65rem] leading-none">✓</span> : <span className="inline-block w-2 h-2 rounded-full border border-muted" />}
+                                {p.l}
+                              </button>
+                              <span className="persona-tip">{p.tip}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
                     </div>
                     <div>
                       <label className="field-label">目标字数</label>
-                      <input 
-                        type="number" 
-                        className="write-num !w-full md:!w-auto" 
+                      <input
+                        type="number"
+                        className="write-num !w-full md:!w-auto"
                         value={freeWordcount}
                         onChange={(e) => setFreeWordcount(parseInt(e.target.value))}
                         step="500" min="500" max="3000"
                       />
                     </div>
-                  </div>
-                  <div className="free-write-full">
-                    <label className="field-label">核心观点 / 补充细节 (补充自定义切入点)</label>
-                    <textarea 
-                      className="write-num h-24 font-serif" 
-                      value={freeAngle}
-                      onChange={(e) => setFreeAngle(e.target.value)}
-                      placeholder="已选视角内容将出现在此，您可以继续修改或补充..."
-                    />
                   </div>
                   <div className="free-write-full text-right">
                     <button className="btn-fetch" onClick={submitFreeWrite}>▶ 开始深度创作</button>
@@ -3077,26 +3110,56 @@ ${combinedContent}
             <div className="grid grid-cols-2 gap-[15px] mb-[25px]">
               <div>
                 <label className="text-[0.65rem] text-muted block mb-[5px]">文章模式</label>
-                <select className="write-num" value={diagStyle} onChange={(e) => setDiagStyle(e.target.value)}>
-                  <option value="fact_first">事实优先 (事实记录)</option>
-                  <option value="oped">理念主导 (理论分析)</option>
-                </select>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { v: 'fact_first', l: '事实优先' },
+                    { v: 'oped', l: '理念主导' },
+                  ].map(m => {
+                    const sel = diagStyle === m.v;
+                    return (
+                      <button
+                        key={m.v}
+                        className={`cat-btn inline-flex items-center gap-1.5 ${sel ? 'border-ink bg-white' : ''}`}
+                        onClick={() => setDiagStyle(m.v)}
+                      >
+                        {sel ? <span className="text-muted text-[0.65rem] leading-none">✓</span> : <span className="inline-block w-2 h-2 rounded-full border border-muted" />}
+                        {m.l}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
               <div>
                 <label className="text-[0.65rem] text-muted block mb-[5px]">写作立场</label>
-                <select className="write-num" value={diagPersona} onChange={(e) => setDiagPersona(e.target.value)}>
-                  <option value="editor">主流情绪 (公约数视角)</option>
-                  <option value="balance">平衡派 (有褒有贬)</option>
-                  <option value="radical">犀利批判 (打破结构)</option>
-                  <option value="cause_effect">前因后果式解读 (逻辑溯源)</option>
-                  <option value="investor">投资者视角 (商业价值)</option>
-                </select>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { v: 'editor', l: '主流情绪', tip: '以社会公约数为基调，反映大多数读者的直觉感受与情绪共鸣。不剑走偏锋、不标新立异，追求"大多数人都这么觉得"的天然正当性。适合需要凝聚共识、传递普遍关切的议题。' },
+                    { v: 'balance', l: '平衡派', tip: '先肯定再质疑，或先批评再理解——每论述一个方向，必用"但硬币的另一面是…"收束。拒绝单向度叙事，让正反双方都获得被听见的体面。适合争议性话题、需要展示思考复杂度的场景。' },
+                    { v: 'radical', l: '犀利批判', tip: '不满足于表面解释，直指结构性问题与利益格局。无惧得罪既得利益者，用"真正的问题是…"式句式揭开遮羞布。文风冷峻、不端不装，适合需要打破沉默、推翻常识性谬误的深度评论。' },
+                    { v: 'cause_effect', l: '前因后果', tip: '不急于下结论，先拉长时间轴——这件事的远因是什么？近因是什么？关键转折点在哪？如果A不发生，B还会发生吗？层层剥开因果链条，让读者看清"为什么会这样"而不是只看到"发生了什么"。' },
+                    { v: 'investor', l: '投资者视角', tip: '用资本市场的语言翻译一切：谁是赢家？谁在买单？护城河变宽了还是变窄了？估值逻辑是否被重新定价？不关心表态，只关心损益表。适合财经类选题、商业模式分析、行业格局变动。' },
+                  ].map(p => {
+                    const sel = diagPersona === p.v;
+                    return (
+                      <span key={p.v} className="relative group">
+                        <button
+                          className={`cat-btn inline-flex items-center gap-1.5 ${sel ? 'border-ink bg-white' : ''}`}
+                          onClick={() => setDiagPersona(p.v)}
+                        >
+                          {sel ? <span className="text-muted text-[0.65rem] leading-none">✓</span> : <span className="inline-block w-2 h-2 rounded-full border border-muted" />}
+                          {p.l}
+                        </button>
+                        <span className="persona-tip">{p.tip}</span>
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
               <div>
                 <label className="text-[0.65rem] text-muted block mb-[5px]">目标字数</label>
-                <input 
-                  type="number" 
-                  className="write-num" 
+                <input
+                  type="number"
+                  className="write-num"
                   value={diagWordcount}
                   onChange={(e) => setDiagWordcount(parseInt(e.target.value))}
                   step="500" min="500" max="3000"

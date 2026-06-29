@@ -741,3 +741,38 @@ body::before {
   border-radius: 2px;
 }
 
+.persona-tip {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  padding: 8px 12px;
+  border-radius: 4px;
+  max-width: 260px;
+  width: max-content;
+  white-space: normal;
+  z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+.persona-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 12px;
+  border: 5px solid transparent;
+  border-top-color: var(--ink);
+}
+
+.group:hover .persona-tip {
+  visibility: visible;
+  opacity: 1;
+}
+
