@@ -226,27 +226,36 @@ app.get("/api/scrape", async (req, res) => {
   }
 });
 
-// AI Proxy
+// AI Proxy — unified DeepSeek (key/model/endpoint all from server env)
 app.post("/api/proxy", async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
-  const { apiKey, payload, provider, baseUrl } = req.body;
+
+  const apiKey = process.env.DEEPSEEK_API_KEY || "";
+  const model = process.env.DEEPSEEK_MODEL || "deepseek-flash";
+  const baseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+  // V4.1+ enables thinking by default. Left on, it burns the whole max_tokens
+  // budget on reasoning_content and can return an EMPTY content (blank draft),
+  // and the server silently ignores temperature. Off unless explicitly enabled.
+  const thinking = process.env.DEEPSEEK_THINKING === "enabled" ? "enabled" : "disabled";
+  const { payload } = req.body;
+
   try {
-    if (!apiKey) return res.status(400).json({ error: { message: "API Key missing" } });
-    if (provider === "deepseek" || provider === "moonshot") {
-      const defaultUrl = provider === "deepseek" ? "https://api.deepseek.com/v1/chat/completions" : "https://api.moonshot.cn/v1/chat/completions";
-      let apiUrl = baseUrl ? (baseUrl.includes("chat/completions") ? baseUrl : baseUrl.replace(/\/$/, "") + "/chat/completions") : defaultUrl;
-      const resp = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
-        body: JSON.stringify({ ...payload, model: payload.model || (provider === "deepseek" ? "deepseek-chat" : "moonshot-v1-8k") }),
-      });
-      const data = await resp.json();
-      return resp.ok ? res.json(data) : res.status(resp.status).json(data);
-    }
-    return res.status(400).json({ error: { message: `Unsupported provider: ${provider}` } });
+    if (!apiKey) return res.status(500).json({ error: { message: "Server DEEPSEEK_API_KEY is not configured" } });
+
+    const apiUrl = baseUrl.includes("chat/completions")
+      ? baseUrl
+      : baseUrl.replace(/\/$/, "") + "/chat/completions";
+
+    const resp = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
+      body: JSON.stringify({ ...payload, model, thinking: { type: thinking } }),
+    });
+    const data = await resp.json();
+    return resp.ok ? res.json(data) : res.status(resp.status).json(data);
   } catch (e: any) {
     res.status(500).json({ error: { message: e.message } });
   }
@@ -299,6 +308,8 @@ app.post("/api/search-topic", async (req, res) => {
     if (!topic || typeof topic !== "string" || !topic.trim()) return res.status(400).json({ error: "Topic is required" });
     const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || "";
     const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
+    const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-flash";
+    const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
     console.log(`[SearchTopic] "${topic}" engine=${engine} anysearchKey=${ANYSEARCH_KEY ? "set" : "missing"}`);
 
     let rawResults: SearchResultRaw[] = [];
@@ -347,7 +358,8 @@ app.post("/api/search-topic", async (req, res) => {
     if (DEEPSEEK_KEY) {
       try {
         const itemsForEval = rawResults.map((r, i) => `[${i + 1}] 标题: ${r.title}\n    来源: ${r.source}\n    URL: ${r.url}\n    片段: ${r.snippet?.substring(0, 200) || "无"}`).join("\n\n");
-        const r = await fetch("https://api.deepseek.com/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${DEEPSEEK_KEY}` }, body: JSON.stringify({ model: "deepseek-chat", messages: [{ role: "user", content: `你是资深新闻编辑。评估以下${rawResults.length}篇搜索结果。\n\n${itemsForEval}\n\n对每篇输出 authorityScore(1-5), relevanceScore(1-5), summary(150-200字中文)。严格JSON: {"items":[{"index":1,"authorityScore":5,"relevanceScore":4,"summary":"..."}]}` }], max_tokens: 4000, temperature: 0.1, response_format: { type: "json_object" } }), signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
+        const dsUrl = DEEPSEEK_BASE_URL.includes("chat/completions") ? DEEPSEEK_BASE_URL : DEEPSEEK_BASE_URL.replace(/\/$/, "") + "/chat/completions";
+        const r = await fetch(dsUrl, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${DEEPSEEK_KEY}` }, body: JSON.stringify({ model: DEEPSEEK_MODEL, messages: [{ role: "user", content: `你是资深新闻编辑。评估以下${rawResults.length}篇搜索结果。\n\n${itemsForEval}\n\n对每篇输出 authorityScore(1-5), relevanceScore(1-5), summary(150-200字中文)。严格JSON: {"items":[{"index":1,"authorityScore":5,"relevanceScore":4,"summary":"..."}]}` }], max_tokens: 4000, temperature: 0.1, response_format: { type: "json_object" }, thinking: { type: process.env.DEEPSEEK_THINKING === "enabled" ? "enabled" : "disabled" } }), signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
         if (r.ok) {
           const d = await r.json();
           const c = d.choices?.[0]?.message?.content || "";

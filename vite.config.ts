@@ -8,7 +8,6 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
       'process.env.VERCEL_ANALYTICS_ID': JSON.stringify(env.VERCEL_ANALYTICS_ID || process.env.VERCEL_ANALYTICS_ID || ''),
       'process.env.ANYSEARCH_API_KEY': JSON.stringify(env.ANYSEARCH_API_KEY || ''),
       'process.env.ADMIN_PIN': JSON.stringify(env.ADMIN_PIN || ''),

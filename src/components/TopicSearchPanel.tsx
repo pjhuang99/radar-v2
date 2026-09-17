@@ -23,7 +23,6 @@ interface ApiResponse {
 }
 
 interface TopicSearchPanelProps {
-  apiKey: string;
   onImport: (
     facts: string[],
     refs: { title: string; url: string; source: string; content?: string }[],
@@ -38,7 +37,7 @@ const TAB_LABELS: Record<TabKey, string> = {
   sina: '新浪新闻',
 };
 
-export default function TopicSearchPanel({ apiKey, onImport }: TopicSearchPanelProps) {
+export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   const [topic, setTopic] = useState('');
   const [freshness, setFreshness] = useState<string>('day');
   const [step, setStep] = useState<'input' | 'searching' | 'results'>('input');

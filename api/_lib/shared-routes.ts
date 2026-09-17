@@ -313,46 +313,38 @@ export function registerSharedRoutes(app: express.Express) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.status(200).end();
 
-    const { apiKey, payload, provider, baseUrl } = req.body;
-    console.log(`[Proxy] Provider=${provider}, Model=${payload?.model}`);
+    const apiKey = process.env.DEEPSEEK_API_KEY || "";
+    const model = process.env.DEEPSEEK_MODEL || "deepseek-flash";
+    const baseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+    // V4.1+ enables thinking by default. Left on, it burns the whole max_tokens
+    // budget on reasoning_content and can return an EMPTY content (blank draft),
+    // and the server silently ignores temperature. Off unless explicitly enabled.
+    const thinking = process.env.DEEPSEEK_THINKING === "enabled" ? "enabled" : "disabled";
+    const { payload } = req.body;
 
     try {
-      if (!apiKey) return res.status(400).json({ error: { message: "API Key is missing" } });
+      if (!apiKey) return res.status(500).json({ error: { message: "Server DEEPSEEK_API_KEY is not configured" } });
 
-      if (provider === "deepseek" || provider === "moonshot") {
-        const defaultUrl =
-          provider === "deepseek"
-            ? "https://api.deepseek.com/v1/chat/completions"
-            : "https://api.moonshot.cn/v1/chat/completions";
+      const apiUrl = baseUrl.includes("chat/completions")
+        ? baseUrl
+        : baseUrl.endsWith("/")
+          ? baseUrl + "chat/completions"
+          : baseUrl + "/chat/completions";
 
-        let apiUrl = defaultUrl;
-        if (baseUrl) {
-          apiUrl = baseUrl.includes("chat/completions")
-            ? baseUrl
-            : baseUrl.endsWith("/")
-              ? baseUrl + "chat/completions"
-              : baseUrl + "/chat/completions";
-        }
-
-        const response = await fetch(apiUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: "Bearer " + apiKey,
-          },
-          body: JSON.stringify({
-            ...payload,
-            model: payload.model || (provider === "deepseek" ? "deepseek-chat" : "moonshot-v1-8k"),
-          }),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          console.error(`[Proxy] ${provider} Error:`, response.status, data);
-          return res.status(response.status).json(data);
-        }
-        return res.status(200).json(data);
+      const response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + apiKey,
+        },
+        body: JSON.stringify({ ...payload, model, thinking: { type: thinking } }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        console.error("[Proxy] DeepSeek Error:", response.status, data);
+        return res.status(response.status).json(data);
       }
-      return res.status(400).json({ error: { message: `Unsupported provider: ${provider}` } });
+      return res.status(200).json(data);
     } catch (e: any) {
       console.error("[Proxy] Error:", e);
       return res.status(500).json({ error: { message: e.message } });
@@ -469,6 +461,8 @@ export function registerSharedRoutes(app: express.Express) {
 
     const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || "";
     const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
+    const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-flash";
+    const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
 
     console.log(`[SearchTopic] Query: "${topic}" (freshness=${freshness}, engine=${engine}, anysearchKey=${ANYSEARCH_KEY ? "set" : "missing"}, deepseekKey=${DEEPSEEK_KEY ? "set" : "missing"})`);
 
@@ -627,18 +621,23 @@ ${itemsForEval}
   ]
 }`;
 
-        const dsRes = await fetch("https://api.deepseek.com/v1/chat/completions", {
+        const dsUrl = DEEPSEEK_BASE_URL.includes("chat/completions")
+          ? DEEPSEEK_BASE_URL
+          : DEEPSEEK_BASE_URL.replace(/\/$/, "") + "/chat/completions";
+
+        const dsRes = await fetch(dsUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${DEEPSEEK_KEY}`,
           },
           body: JSON.stringify({
-            model: "deepseek-chat",
+            model: DEEPSEEK_MODEL,
             messages: [{ role: "user", content: evalPrompt }],
             max_tokens: 4000,
             temperature: 0.1,
             response_format: { type: "json_object" },
+            thinking: { type: process.env.DEEPSEEK_THINKING === "enabled" ? "enabled" : "disabled" },
           }),
           signal: AbortSignal.timeout(SEARCH_TIMEOUT),
         });

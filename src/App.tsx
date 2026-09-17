@@ -1,9 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Type } from "@google/genai";
 import { motion, AnimatePresence } from "motion/react";
-import { Rss, Plus, Trash2, Settings, RefreshCw, ExternalLink, Volume2, SquarePen } from "lucide-react";
+import { Rss, Plus, Trash2, RefreshCw, ExternalLink, Volume2, SquarePen } from "lucide-react";
 import TopicSearchPanel from './components/TopicSearchPanel';
 import { classifySource } from './config/sources';
+
+// Single source of truth for the LLM. Model/key/endpoint are resolved on the
+// server from env (DEEPSEEK_MODEL / DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL), so a
+// future model swap is a one-line env change — this label is display-only.
+const AI_MODEL_LABEL = 'DeepSeek V4.1-Flash';
+
+// Models tend to prepend labels ("视角一：", "1. ", "【核心矛盾】") and overrun the
+// length limit even when told not to. Normalize here so the angle cards stay
+// clean one-liners regardless of what the prompt produced.
+const shortenAngle = (raw: string): string => {
+  const clean = String(raw ?? '')
+    .replace(/^\s*(?:写作)?(?:视角|角度|推荐|方案)\s*[一二三四五六七八九十\d]+\s*[、.．:：)）]\s*/, '')
+    .replace(/^\s*[一二三四五六七八九十\d]{1,3}\s*[、.．:：)）]\s+(?=\S)/, '')
+    .replace(/^\s*[【\[]([^】\]]{1,12})[】\]]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= 60) return clean;
+  // Model ignored the limit — fall back to its first sentence.
+  const firstSentence = clean.split(/[。！？!?；;\n]/)[0]?.trim() ?? '';
+  return firstSentence.length >= 8 ? firstSentence : clean;
+};
 
 interface Topic {
   title: string;
@@ -138,8 +158,6 @@ const INITIAL_MOCK_AUDIT_LOGS = [
 ];
 
 export default function App() {
-  const [provider] = useState<string>('deepseek');
-  const [apiKey, setApiKey] = useState<string>(localStorage.getItem('deepseek_key') || '');
   const [activeOperator, setActiveOperator] = useState<string>(() => {
     const saved = localStorage.getItem('commentary_radar_operator_id');
     if (saved && saved.trim() && saved.trim() !== 'guest') return saved.trim();
@@ -168,7 +186,6 @@ export default function App() {
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   const [showAudioToast, setShowAudioToast] = useState(false);
-  const [showToolbarSettings, setShowToolbarSettings] = useState(false);
   const [showAdminConsole, setShowAdminConsole] = useState(false);
   const [showAdminPasswordModal, setShowAdminPasswordModal] = useState(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
@@ -284,9 +301,6 @@ export default function App() {
   const [saveBtnText, setSaveBtnText] = useState('💾 保存到草稿箱');
   const [copyBtnText, setCopyBtnText] = useState('复制纯文本正文');
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [customModel, setCustomModel] = useState<string>(localStorage.getItem('deepseek_model') || 'deepseek-chat');
-  const [deepThinking, setDeepThinking] = useState<boolean>(localStorage.getItem('deep_thinking') === 'true');
-
   const [currentSourceContent, setCurrentSourceContent] = useState('');
   const [currentSourceUrl, setCurrentSourceUrl] = useState('');
   const [currentSourceName, setCurrentSourceName] = useState('');
@@ -314,7 +328,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'hotlist' | 'rss' | 'discovery'>('hotlist');
   const [writeMode, setWriteMode] = useState<'direct' | 'search'>('direct');
   const [discoveryItems, setDiscoveryItems] = useState<RawItem[]>([]);
-  const [searchEngine, setSearchEngine] = useState<string>(localStorage.getItem('search_engine') || 'bing');
 
   // Drafts List State
   const [drafts, setDrafts] = useState<Draft[]>(() => {
@@ -662,39 +675,10 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
     fetchAdminLogs();
   }, []);
 
-  const handleDeepThinkingChange = (checked: boolean) => {
-    setDeepThinking(checked);
-    localStorage.setItem('deep_thinking', String(checked));
-  };
-
-  const handleKeyChange = (v: string) => {
-    const trimmed = v.trim();
-    setApiKey(trimmed);
-    localStorage.setItem('deepseek_key', trimmed);
-  };
-
   const handleOperatorChange = (v: string) => {
     const trimmed = v.trim();
     setActiveOperator(trimmed);
     localStorage.setItem('commentary_radar_operator_id', trimmed);
-  };
-
-  const handleModelChange = (v: string) => {
-    setCustomModel(v);
-    localStorage.setItem('deepseek_model', v);
-  };
-
-  const handleSearchEngineChange = (v: string) => {
-    setSearchEngine(v);
-    localStorage.setItem('search_engine', v);
-  };
-
-  const handleReset = () => {
-    if (window.confirm('确定要重置所有 AI 配置（Key、模型）吗？')) {
-      // Only clear AI config keys, not drafts/RSS/audit logs
-      ['deepseek_key', 'deepseek_model', 'deep_thinking', 'search_engine'].forEach(k => localStorage.removeItem(k));
-      window.location.reload();
-    }
   };
 
   const saveToDrafts = () => {
@@ -962,9 +946,6 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
   };
 
   const startAnalysis = async () => {
-    const currentKey = apiKey;
-    if (!currentKey) return alert('请在设置中配置 DeepSeek API Key');
-    
     let sourceItems: RawItem[] = [];
     if (activeTab === 'hotlist') sourceItems = rawItems;
     else if (activeTab === 'rss') sourceItems = rssItems.map(it => ({ title: it.title, url: it.link, _sourceName: it._sourceName }));
@@ -981,6 +962,11 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
 筛选原则：关注负面消息，以及有强烈冲突，容易引发大众讨论的话题。请注意信息源的多样性，尽量平衡各平台内容，减少"今日头条"的入选比例。
 输出必须为严格的 JSON 格式。
 
+每个选题给出 2-3 个写作视角。视角格式的硬性要求（违反即视为失败）：
+- 每条视角必须是**一句话**，**不超过 30 个字**，直接给出观点或切入角度。
+- **严禁**任何标题、序号、前缀或标签（如"视角一："、"角度2、"、"【核心矛盾】"），严禁换行、分段或补充解释。
+- 不要复述标题，要给出立场鲜明的判断，各条角度互不重复。
+
 待分析列表：
 ${titles}
 
@@ -989,15 +975,15 @@ ${titles}
   "selected": [
     {
       "index": 原始序号,
-      "angles": ["具体视角1", "具体视角2", "具体视角3"]
+      "angles": ["短句视角一，不带序号", "短句视角二，不带序号"]
     }
   ]
 }`;
 
-      // 使用 JSON mode (responseSchema: true) 并显式指定 DeepSeek
-      const text = await callAI(apiKey, prompt, { 
-        maxTokens: 2000, 
-        responseSchema: true, 
+      // JSON mode (response_format: json_object) via the unified DeepSeek proxy
+      const text = await callAI(prompt, {
+        maxTokens: 2000,
+        responseSchema: true,
         temperature: 0.3 
       });
       
@@ -1018,7 +1004,7 @@ ${titles}
       const selectedTopics: Topic[] = analysis.selected.map((s: any) => {
         const item = sourceItems[s.index - 1];
         if (!item) return null;
-        return { title: item.title, angles: s.angles, url: item.url, sourceName: item._sourceName };
+        return { title: item.title, angles: (s.angles || []).map(shortenAngle).filter(Boolean), url: item.url, sourceName: item._sourceName };
       }).filter((t): t is Topic => t !== null);
 
       setTopicData(selectedTopics);
@@ -1032,98 +1018,44 @@ ${titles}
     }
   };
 
-  const callAI = async (key: string, prompt: string, options: { maxTokens?: number, responseSchema?: any, providerOverride?: string, useSearch?: boolean, temperature?: number } = {}) => {
-    const activeProvider = options.providerOverride || 'deepseek';
-    const activeBaseUrl = localStorage.getItem(activeProvider + '_base_url') || '';
-    const activeModel = options.providerOverride ? (localStorage.getItem(activeProvider + '_model') || '') : customModel;
-    
+  const callAI = async (prompt: string, options: { maxTokens?: number, responseSchema?: any, temperature?: number } = {}) => {
     const maxRetries = 2;
     let lastError: any = null;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        if (activeProvider === 'gemini') {
-          // If gemini is forced as an override, we MUST use the internal key if the provided key is from deepseek
-          const finalKey = (options.providerOverride ? (process.env.GEMINI_API_KEY || key) : (key || process.env.GEMINI_API_KEY || '')).trim();
-          if (!finalKey) throw new Error('Gemini API Key 缺失。');
-          
-          const ai = new GoogleGenAI({ apiKey: finalKey });
-          
-          try {
-            const response = await ai.models.generateContent({
-              model: activeModel || "gemini-3-flash-preview",
-              contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              config: {
-                responseMimeType: options.responseSchema ? "application/json" : "text/plain",
-                temperature: typeof options.temperature === 'number' ? options.temperature : undefined,
-                tools: options.useSearch ? [{ googleSearch: {} }] : undefined
-              }
-            });
-            
-            const text = response.text || '';
-            if (!text) throw new Error('Gemini 返回了空响应。');
-            return text;
-          } catch (geminiErr: any) {
-            console.error("Gemini SDK Error:", geminiErr);
-            throw geminiErr;
-          }
-        } else {
-          let res;
-          try {
-            const payload: any = { 
-              model: activeModel || 'deepseek-chat', 
-              max_tokens: options.maxTokens || 4000, 
-              temperature: typeof options.temperature === 'number' ? options.temperature : 0.7,
-              messages: [{ role: 'user', content: prompt }],
-              ...(deepThinking ? { thinking: { type: 'enabled', budget_tokens: 1024 } } : {})
-            };
-
-            if (options.responseSchema) {
-              payload.response_format = { type: 'json_object' };
-            }
-
-            res = await fetch('/api/proxy', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                apiKey: key.trim(), 
-                provider: 'deepseek', 
-                baseUrl: activeBaseUrl,
-                payload
-              })
-            });
-          } catch (fetchErr) {
-            // Fallback to direct fetch if proxy fails (might need CORS)
-            if (!activeBaseUrl) {
-              const payload: any = {
-                model: activeModel || 'deepseek-chat',
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens: options.maxTokens || 4000,
-                ...(deepThinking ? { thinking: { type: 'enabled', budget_tokens: 1024 } } : {})
-              };
-              if (options.responseSchema) {
-                payload.response_format = { type: 'json_object' };
-              }
-
-              res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-                method: 'POST',
-                headers: { 
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${key.trim()}`
-                },
-                body: JSON.stringify(payload)
-              });
-            } else {
-              throw fetchErr;
-            }
-          }
-          const data = await res.json();
-          if (!res.ok) {
-            const details = data.error?.message || data.message || JSON.stringify(data);
-            throw new Error(`DeepSeek 接口返回错误: ${details}`);
-          }
-          return data.choices?.[0]?.message?.content || '';
+        const payload: any = {
+          max_tokens: options.maxTokens || 4000,
+          temperature: typeof options.temperature === 'number' ? options.temperature : 0.7,
+          messages: [{ role: 'user', content: prompt }],
+        };
+        if (options.responseSchema) {
+          payload.response_format = { type: 'json_object' };
         }
+
+        // Key/model/endpoint are injected server-side from env (DEEPSEEK_*).
+        const res = await fetch('/api/proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const details = data.error?.message || data.message || JSON.stringify(data);
+          throw new Error(`DeepSeek 接口返回错误: ${details}`);
+        }
+        const choice = data.choices?.[0];
+        const content = choice?.message?.content || '';
+        // Never return '' — callers assign the result straight into the draft
+        // body, so an empty response would silently render a blank article.
+        if (!content.trim()) {
+          throw new Error(
+            choice?.finish_reason === 'length'
+              ? '模型输出被截断（思考占用过多 token），未返回正文，请重试'
+              : '模型返回了空响应，请重试'
+          );
+        }
+        return content;
       } catch (e: any) {
         lastError = e;
         if (attempt < maxRetries) {
@@ -1137,9 +1069,6 @@ ${titles}
   };
 
   const executeWorkflow = async (title: string, angle: string, style: string, persona: string, wordcount: number, url: string, sourceName: string, preExtractedFacts?: string[], preConfiguredRefs?: { title: string, url: string, source: string, content?: string }[]) => {
-    const currentKey = apiKey;
-    const currentResearchKey = apiKey;
-    
     setDraftReferences(preConfiguredRefs || []);
     setShowDraft(true);
     setDraftTitle(title);
@@ -1154,8 +1083,7 @@ ${titles}
 
     const styleMap: any = { fact_first: '事实优先', pipeline: '模式化解读', oped: '理念主导' };
     const personaMap: any = { editor: '主流情绪 (公约数视角)', balance: '平衡派 (有褒有贬)', radical: '犀利批判 (批判既得利益)' };
-    const modelName = customModel || (provider === 'gemini' ? 'gemini-3-flash-preview' : 'deepseek-chat');
-    setDraftMetaInfo(`[ 模型: ${modelName} | 搜索: ${searchEngine.toUpperCase()} | 模式: ${styleMap[style] || style} | 立场: ${personaMap[persona] || persona} ]`);
+    setDraftMetaInfo(`[ 模型: ${AI_MODEL_LABEL} | 模式: ${styleMap[style] || style} | 立场: ${personaMap[persona] || persona} ]`);
 
     const hasUrl = !!(url && url.startsWith('http'));
     const isSearchSource = sourceName === '今日头条' || sourceName === '新浪新闻';
@@ -1213,61 +1141,15 @@ ${titles}
 
     // If search is needed (Toutiao/Sina/No URL) OR direct extraction failed
     if (!sourceContent) {
-      const searchLabel = searchEngine === 'google' ? 'Google Search' : (searchEngine === 'bing' ? 'Bing/Web Search' : '新浪新闻搜索');
+      const searchLabel = 'Web 搜索';
       const searchReason = isSearchSource ? `[${sourceName}] 需要多维信源交叉验证` : (hasUrl ? "原文提取未果" : "未提供链接");
-      
+
       setDraftBody(`PHASE 1: ${searchReason}，正在通过 ${searchLabel} 获取事实...\n关键词: ${title}`);
 
       try {
         let searchResults: { title: string, url: string, source: string }[] = [];
 
-        if (searchEngine === 'google') {
-        // Use Gemini's native Google Search
-        const searchPrompt = `请在互联网上搜索关于"${title}"的最新、最权威的新闻报道。
-        请列出前 3-5 个最相关的结果，包括标题、URL 和来源名称。
-        请严格按以下 JSON 格式输出：
-        {
-          "results": [
-            { "title": "标题", "url": "URL", "source": "来源名称" }
-          ]
-        }`;
-        
-        const responseSchema = {
-          type: Type.OBJECT,
-          properties: {
-            results: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  url: { type: Type.STRING },
-                  source: { type: Type.STRING }
-                },
-                required: ["title", "url", "source"]
-              }
-            }
-          },
-          required: ["results"]
-        };
-
-        const text = await callAI(currentResearchKey, searchPrompt, { 
-          maxTokens: 1000, 
-          providerOverride: 'gemini', // Force gemini for search grounding
-          useSearch: true,
-          responseSchema
-        });
-
-        try {
-          const firstBrace = text.indexOf('{');
-          const lastBrace = text.lastIndexOf('}');
-          const data = JSON.parse(text.substring(firstBrace, lastBrace + 1));
-          searchResults = data.results || [];
-        } catch (e) {
-          console.error("Google Search JSON parse failed", e);
-        }
-      } else if (searchEngine === 'bing') {
-        // Use Jina Search (s.jina.ai) as a high-quality web search
+        // Jina Search (s.jina.ai) as a high-quality web search
         const jinaSearchUrl = `https://s.jina.ai/${encodeURIComponent(title)}`;
         const res = await fetch(jinaSearchUrl);
         if (res.ok) {
@@ -1275,11 +1157,11 @@ ${titles}
           const extractPrompt = `从以下 Web 搜索结果中提取前 3-5 个最相关的新闻文章。
           请严格按以下格式输出，每行一个：
           标题 | URL | 来源
-          
+
           搜索结果：
           ${md.substring(0, 5000)}`;
-          
-          const text = await callAI(currentResearchKey, extractPrompt, { maxTokens: 800 });
+
+          const text = await callAI(extractPrompt, { maxTokens: 800 });
           searchResults = text.split('\n')
             .filter(l => l.includes('|'))
             .map(l => {
@@ -1288,29 +1170,6 @@ ${titles}
             })
             .filter(r => r.url && r.url.startsWith('http'));
         }
-      } else {
-        // Original Sina Search
-        const searchUrl = `https://search.sina.com.cn/search?q=${encodeURIComponent(title)}&tp=news`;
-        const searchRes = await fetch('https://r.jina.ai/' + searchUrl);
-        if (searchRes.ok) {
-          const searchMd = await searchRes.text();
-          const extractPrompt = `从以下新浪新闻搜索结果中提取前 3-5 个最相关的新闻文章。
-          请严格按以下格式输出，每行一个：
-          标题 | URL
-          
-          搜索结果：
-          ${searchMd.substring(0, 4000)}`;
-          
-          const resultsText = await callAI(currentResearchKey, extractPrompt, { maxTokens: 500 });
-          searchResults = resultsText.split('\n')
-            .filter(l => l.includes('|'))
-            .map(l => {
-              const [t, u] = l.split('|').map(s => s.trim());
-              return { title: t, url: u, source: '新浪新闻' };
-            })
-            .filter(r => r.url && r.url.startsWith('http'));
-        }
-      }
 
       if (searchResults.length > 0) {
         setDraftReferences(searchResults.map(r => ({ title: r.title, url: r.url, source: r.source })));
@@ -1387,9 +1246,8 @@ ${titles}
         researchPrompt += `\n【重要时间指引】：如果素材中出现"X月X日"而未标注年份，请默认其为 2026 年。如果素材描述的是 2025 年的事件，请明确将其视为"去年"或"已完成"的事件。`;
         researchPrompt += `\n【原始参考素材】：\n${sourceContent || '无外部素材，请依赖内部数据库'}\n\n【输出要求】：严禁主观评价，只列客观事实（带溯源标签），字数600字内。`;
         
-        research = await callAI(currentResearchKey, researchPrompt, { 
+        research = await callAI(researchPrompt, {
           maxTokens: 1500,
-          useSearch: !sourceContent,
           temperature: 0.1
         });
       }
@@ -1431,15 +1289,23 @@ ${research}
 你现在扮演一位主流媒体的资深标题编辑。你的信条是：标题不是文章内容的概括，而是文章最核心判断的直接陈述。
 标题写作规律：
 1. 句子是完整的判断句，有主语+谓语+宾语
-2. 常用"是……而非……""或是……的关键""应该是……"等 显示立场的连接词
+2. 直接下判断。严禁用"是……而非……""……的关键在于""应该是……"这类可套在任何选题上的万能句式
 3. 可以引用政策原话或民间词汇加引号，制造熟悉感中的陌生感
 4. 长度18-24字为佳，允许口语化
 格式：【备选标题一】... 【备选标题二】... 【备选标题三】...
 
 第三步：开始正文创作。
-- 严格控制正文字数在 ${wordcount} 字左右（不含前置分析和标题），误差范围控制在 ±10% 以内。
+- 正文字数在 ${wordcount} 字上下即可（不含前置分析和标题）。宁短勿凑：不要为了凑字数重复观点、复述前文或注入空话。
 - 严禁使用 Markdown 加粗符号（**）。
-- 禁止使用"让人痛心"、"我们要..."等公文套话。
+- 【严禁套话与结构词】（违反即失败）：
+  · 总结类：综上所述、总而言之、由此可见、不难看出、换言之、换句话说
+  · 提示类：值得注意的是、需要指出的是、值得一提的是
+  · 空泛类：不容忽视、意义重大、具有深远影响、在……背景下、众所周知、毋庸置疑、进一步深入
+  · 公文腔：让人痛心、我们要、必须认识到、应当看到、切实推进
+  · 万能句式：不要连用"不仅……而且……""既……又……"制造整齐排比；不要"是……而非……"
+- 【节奏要求】：长短句交错。允许出现 5-10 字的短断句，也允许偶尔的长句。不要连续三句以上结构雷同，不要写出工整对仗的并列段。
+- 【段落要求】：段落长度不求均匀，允许出现只有一两句话的短段落。
+- 某个意思若只能用套话表达，宁可不写，或换一个更具体的说法。
 - 保持【${personasDesc[persona]}】的文风。`;
 
       if (style === 'fact_first') {
@@ -1448,7 +1314,7 @@ ${research}
         prompt += "\n\n第四步：正文模式要求（专业解读）：解释事件为什么会发生，会如何发展，有哪些后果。使用通俗易懂的经济学、传播学、社会学等理论，流体思维自然展开。";
       }
 
-      const raw = await callAI(currentKey, prompt, { maxTokens: 4000, temperature: 0.6 });
+      const raw = await callAI(prompt, { maxTokens: 4000, temperature: 0.6 });
       const cleaned = raw.replace(/\*\*/g, '');
       // Wrap citations and system notes for UI display with user-select: none
       const wrapped = cleaned.replace(/(\[来源[^\]]+\]|\[共同事实\]|\[素材未提及\]|\[资料未提及\]|\[差异\/独特\]|\[核查\s*\d+\]|\[视角[^\]]+\])/g, '<span class="citation-tag">$1</span>');
@@ -1463,7 +1329,7 @@ ${research}
       try {
         const styleMap: any = { fact_first: '事实优先', pipeline: '模式化解读', oped: '理念主导' };
         const personaMap: any = { editor: '主流情绪', balance: '平衡派', radical: '犀利批判' };
-        const modelName = customModel || 'deepseek-chat';
+        const modelName = AI_MODEL_LABEL;
         const metaStr = `[ 模型: ${modelName} | 模式: ${styleMap[style] || style} | 立场: ${personaMap[persona] || persona} ]`;
         const actionLabel = (preExtractedFacts && preExtractedFacts.length > 0) ? '自由写作' : '开始创作';
         logAdminBehavior(actionLabel, title, metaStr, draftReferences.length, cleaned.length, cleaned, activeOperator);
@@ -1483,9 +1349,6 @@ ${research}
 
   const startFactcheck = async () => {
     setDraftTab('sources');
-    const currentKey = apiKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY : '');
-    if (!currentKey && provider !== 'gemini') return alert('请填入 API Key');
-    
     setIsFactchecking(true);
     setShowFactcheck(true);
     setPendingCorrections([]);
@@ -1641,7 +1504,7 @@ OK|草稿中的正确表述|验证此事实的权威URL、[来源N]、[核查信
 待核查文章：
 ${draftBody}`;
       
-      const report = await callAI(currentKey, prompt, { maxTokens: 3000, useSearch: false, temperature: 0.1 });
+      const report = await callAI(prompt, { maxTokens: 3000, temperature: 0.1 });
       setFactCheckReport(report);
       
       const autoSourceUrls = autoSources.map(s => s.url);
@@ -2273,28 +2136,24 @@ ${combinedContent}
 【任务】：
 1. 【核心事实】：提取多方信源达成共识的核心事实。**要求：每个事实末尾必须标注其来源编号，如 [链接1] 或 [链接2, 补充素材1]**。
 2. 【差异事实】：提取信源之间存在偏差或各家独有的深度细节。**要求：必须标注来源编号，如 [链接3]**。
-3. 【视角推荐】：提供 3-5 个具体、通俗、犀利的写作视角。视角应具备冲突感、稀缺性、解释力和读者共鸣。
+3. 【视角推荐】：提供 3-5 个写作视角。
+
+【视角格式的硬性要求】（违反即视为失败）：
+- 每条视角必须是**一句话**，**不超过 30 个字**，直接给出观点或切入角度。
+- **严禁**任何标题、序号、前缀或标签（如"视角一："、"角度2、"、"【核心矛盾】"），严禁换行、分段、加粗或补充解释。
+- 不要复述事实，要给出立场鲜明的判断。示例：「关税战倒逼中国车企从出口转向本地建厂」。
+- 各条视角必须彼此独立、切入角度互不重复。
 
 请严格按以下 JSON 格式输出：
 {
   "sharedFacts": ["事实A [链接1, 链接2]", "事实B [链接1]"],
   "diffFacts": ["差异点C [链接3]", "差异点D [补充素材1]"],
-  "angles": ["视角1", "视角2", "视角3"]
+  "angles": ["短句视角一，不带序号", "短句视角二，不带序号", "短句视角三，不带序号"]
 }`;
 
-    const responseSchema = {
-      type: Type.OBJECT,
-      properties: {
-        sharedFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
-        diffFacts: { type: Type.ARRAY, items: { type: Type.STRING } },
-        angles: { type: Type.ARRAY, items: { type: Type.STRING } }
-      },
-      required: ["sharedFacts", "diffFacts", "angles"]
-    };
-
-    const result = await callAI(apiKey, analysisPrompt, {
+    const result = await callAI(analysisPrompt, {
       maxTokens: 3000,
-      responseSchema: responseSchema,
+      responseSchema: true,
       temperature: 0.3,
     });
 
@@ -2310,7 +2169,7 @@ ${combinedContent}
     return {
       sharedFacts: data.sharedFacts || [],
       diffFacts: data.diffFacts || [],
-      angles: data.angles || [],
+      angles: (data.angles || []).map(shortenAngle).filter(Boolean),
     };
   };
 
@@ -2466,55 +2325,8 @@ ${combinedContent}
 
       <div className="toolbar">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap w-full md:w-auto">
-          <div className="flex items-center gap-2 w-full md:w-auto">
-            <span className="text-[0.6rem] text-muted uppercase font-bold w-12 md:w-14 flex-shrink-0">Key</span>
-            <div className="flex-1 md:flex-none md:w-64">
-              <input 
-                className="key-input !py-1 w-full font-mono text-[0.7rem]" 
-                type="password" 
-                value={apiKey}
-                onChange={(e) => handleKeyChange(e.target.value)}
-                placeholder="填写 DeepSeek API Key..."
-              />
-            </div>
-          </div>
-
-
-
-          <button 
-            onClick={() => setShowToolbarSettings(!showToolbarSettings)}
-            className={`md:hidden p-1.5 rounded border border-border flex items-center gap-1 transition-all ${showToolbarSettings ? 'bg-ink text-paper border-ink' : 'text-muted'}`}
-          >
-            <Settings size={14} className={showToolbarSettings ? 'animate-spin-slow' : ''} />
-            <span className="text-[0.6rem] font-bold">配置</span>
-          </button>
-
-          <div className={`${showToolbarSettings ? 'flex' : 'hidden md:flex'} items-center gap-4 w-full md:w-auto mt-2 md:mt-0 pt-2 md:pt-0 border-t md:border-t-0 border-border md:border-l pl-0 md:pl-4 flex-wrap`}>
-            <div className="flex flex-col">
-              <label className="text-[0.6rem] text-muted font-bold uppercase mb-0.5">模型</label>
-              <select 
-                className="key-input !py-1 !w-full md:!w-auto"
-                value={customModel}
-                onChange={(e) => handleModelChange(e.target.value)}
-              >
-                <option value="deepseek-v4-flash">DeepSeek V4-Flash (Default)</option>
-                <option value="deepseek-v4-pro">DeepSeek V4-Pro</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2 border-l-0 md:border-l border-border md:pl-4">
-              <input 
-                type="checkbox" 
-                id="deep-thinking-check"
-                className="w-3 h-3 accent-accent cursor-pointer" 
-                checked={deepThinking}
-                onChange={(e) => handleDeepThinkingChange(e.target.checked)}
-              />
-              <label htmlFor="deep-thinking-check" className="text-[0.6rem] font-bold text-muted cursor-pointer select-none">
-                深度思考 (Thinking)
-              </label>
-            </div>
-          </div>
+          <span className="text-[0.6rem] text-muted uppercase font-bold flex-shrink-0">AI 引擎</span>
+          <span className="text-[0.7rem] font-mono text-muted">{AI_MODEL_LABEL} · 服务端统一配置</span>
         </div>
 
         <div className="hidden md:flex flex-1" />
@@ -2665,7 +2477,6 @@ ${combinedContent}
           {writeMode === 'search' ? (
             <div className="free-write-section !border-t-0 !pt-0 !pb-10 !bg-transparent">
               <TopicSearchPanel
-                apiKey={apiKey}
                 onImport={async (facts, refs, title) => {
                   // Build labeled source contents from selected article summaries
                   const sourceContents = refs.map((r, i) => ({
