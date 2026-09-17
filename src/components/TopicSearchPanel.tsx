@@ -32,16 +32,17 @@ interface TopicSearchPanelProps {
 
 type TabKey = 'anysearch' | 'sina';
 
+// 顺序即渲染顺序：新浪新闻在左（默认展示），AnySearch 在右（需点击）。
 const TAB_LABELS: Record<TabKey, string> = {
-  anysearch: 'AnySearch',
   sina: '新浪新闻',
+  anysearch: 'AnySearch',
 };
 
 export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   const [topic, setTopic] = useState('');
   const [freshness, setFreshness] = useState<string>('day');
   const [step, setStep] = useState<'input' | 'searching' | 'results'>('input');
-  const [activeTab, setActiveTab] = useState<TabKey>('anysearch');
+  const [activeTab, setActiveTab] = useState<TabKey>('sina');
 
   // Dual result stores
   const [anyResults, setAnyResults] = useState<SearchResult[]>([]);
@@ -139,9 +140,9 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
       setSinaSelected(new Set());
     }
 
-    // Auto-switch to the tab with more results
-    if (anyP.status === 'rejected' && sinaP.status === 'fulfilled') {
-      setActiveTab('sina');
+    // 默认展示新浪；仅当新浪失败、AnySearch 有结果时才自动切过去
+    if (sinaP.status === 'rejected' && anyP.status === 'fulfilled') {
+      setActiveTab('anysearch');
     }
 
     setExpandedCards(new Set());
@@ -213,7 +214,7 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
     setAnyWarning('');
     setSinaWarning('');
     setError('');
-    setActiveTab('anysearch');
+    setActiveTab('sina');
     setStep('input');
   };
 
