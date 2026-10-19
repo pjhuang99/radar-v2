@@ -1780,9 +1780,8 @@ ${draftBody}`;
   ): Promise<{ title: string; url: string; source: string; content: string; authorityLevel: string }[]> => {
     if (!queries.length) return [];
 
-    // Step 1: Search Sina + AnySearch directly from browser (parallel, no backend)
+    // Step 1: Search Sina + DeepSeek (parallel, proxied through backend)
     const SEARCH_TIMEOUT = 7000;
-    const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || '';
 
     // Common result mapper for both engines
     const MEDIA_DOMAIN_MAP: Record<string, string> = {
@@ -1823,12 +1822,12 @@ ${draftBody}`;
         } catch { return [] as RawResult[]; }
         finally { clearTimeout(tid); }
       })(),
-      // Engine 2: AnySearch (proxied through backend)
+      // Engine 2: DeepSeek Search (proxied through backend)
       (async () => {
         const ctrl = new AbortController();
         const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
         try {
-          const res = await fetch('/api/anysearch-proxy', {
+          const res = await fetch('/api/deepseek-search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query }),
@@ -1836,10 +1835,16 @@ ${draftBody}`;
           });
           if (!res.ok) return [] as RawResult[];
           const data = await res.json();
-          const results = data?.data?.results || data?.results || [];
+          const results = data?.results || [];
           return (results as any[]).map((r: any) => {
-            const r2 = mapResult(r.title || '', r.url || '', r.source || (r.url ? new URL(r.url).hostname : ''));
-            (r2 as any).snippet = r.snippet || r.content || r.description || '';
+            const authority = typeof r.authority === 'number' ? r.authority : -1;
+            const rerank = typeof r.rerank_score === 'number' ? r.rerank_score : 0;
+            const source = r.site_name || (r.url ? new URL(r.url).hostname : '');
+            const r2 = mapResult(r.title || '', r.url || '', source);
+            r2.authorityLevel = authority >= 3 ? 'high' : authority === 2 ? 'medium' : 'unknown';
+            r2.authorityScore = authority >= 3 ? authority + 1 : 3;
+            r2.relevanceScore = rerank >= 2.5 ? 5 : rerank >= 2.0 ? 4 : rerank >= 1.5 ? 3 : rerank >= 1.0 ? 2 : 1;
+            (r2 as any).snippet = r.summary || r.snippet || '';
             return r2;
           });
         } catch { return [] as RawResult[]; }
@@ -1858,7 +1863,7 @@ ${draftBody}`;
       if (r.status === 'fulfilled') allRawResults.push(...r.value);
     }
 
-    console.log(`[AutoRetrieval] ${queries.length} queries → ${allRawResults.length} raw results (Sina + AnySearch)`);
+    console.log(`[AutoRetrieval] ${queries.length} queries → ${allRawResults.length} raw results (Sina + DeepSeek)`);
 
     if (!allRawResults.length) return [];
 

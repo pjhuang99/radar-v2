@@ -18,7 +18,6 @@ interface ApiResponse {
   query: string;
   totalFound: number;
   returned: number;
-  usedAnySearch: boolean;
   warning?: string;
 }
 
@@ -30,37 +29,37 @@ interface TopicSearchPanelProps {
   ) => void;
 }
 
-type TabKey = 'anysearch' | 'sina';
+type TabKey = 'deepseek' | 'sina';
 
-// 顺序即渲染顺序：新浪新闻在左（默认展示），AnySearch 在右（需点击）。
+// 顺序即渲染顺序：DeepSeek 在左（默认展示，主引擎），新浪新闻在右（兜底）。
 const TAB_LABELS: Record<TabKey, string> = {
+  deepseek: 'DeepSeek',
   sina: '新浪新闻',
-  anysearch: 'AnySearch',
 };
 
 export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   const [topic, setTopic] = useState('');
   const [freshness, setFreshness] = useState<string>('day');
   const [step, setStep] = useState<'input' | 'searching' | 'results'>('input');
-  const [activeTab, setActiveTab] = useState<TabKey>('sina');
+  const [activeTab, setActiveTab] = useState<TabKey>('deepseek');
 
   // Dual result stores
-  const [anyResults, setAnyResults] = useState<SearchResult[]>([]);
+  const [dsResults, setDsResults] = useState<SearchResult[]>([]);
   const [sinaResults, setSinaResults] = useState<SearchResult[]>([]);
-  const [anySelected, setAnySelected] = useState<Set<number>>(new Set());
+  const [dsSelected, setDsSelected] = useState<Set<number>>(new Set());
   const [sinaSelected, setSinaSelected] = useState<Set<number>>(new Set());
-  const [anyWarning, setAnyWarning] = useState('');
+  const [dsWarning, setDsWarning] = useState('');
   const [sinaWarning, setSinaWarning] = useState('');
   const [error, setError] = useState('');
   const [expandedCards, setExpandedCards] = useState<Set<number>>(new Set());
 
   // Derived: active tab's data
-  const results = activeTab === 'anysearch' ? anyResults : sinaResults;
-  const selectedIndices = activeTab === 'anysearch' ? anySelected : sinaSelected;
-  const warning = activeTab === 'anysearch' ? anyWarning : sinaWarning;
+  const results = activeTab === 'deepseek' ? dsResults : sinaResults;
+  const selectedIndices = activeTab === 'deepseek' ? dsSelected : sinaSelected;
+  const warning = activeTab === 'deepseek' ? dsWarning : sinaWarning;
 
-  const totalSelected = anySelected.size + sinaSelected.size;
-  const totalResults = anyResults.length + sinaResults.length;
+  const totalSelected = dsSelected.size + sinaSelected.size;
+  const totalResults = dsResults.length + sinaResults.length;
 
   // Smart default selection: pick up to 3 articles from different high-authority sources
   const applySmartDefaults = (items: SearchResult[]): Set<number> => {
@@ -94,19 +93,19 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   const handleSearch = async () => {
     if (!topic.trim()) return;
     setError('');
-    setAnyWarning('');
+    setDsWarning('');
     setSinaWarning('');
     setStep('searching');
 
     const searchBody = { topic: topic.trim(), freshness };
 
     // Fire both engines in parallel
-    const [anyP, sinaP] = await Promise.allSettled([
+    const [dsP, sinaP] = await Promise.allSettled([
       fetch('/api/search-topic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...searchBody, engine: 'anysearch' }),
-      }).then(r => r.ok ? r.json() : Promise.reject(new Error(`AnySearch ${r.status}`))),
+        body: JSON.stringify({ ...searchBody, engine: 'deepseek' }),
+      }).then(r => r.ok ? r.json() : Promise.reject(new Error(`DeepSeek ${r.status}`))),
       fetch('/api/search-topic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,17 +113,17 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
       }).then(r => r.ok ? r.json() : Promise.reject(new Error(`Sina ${r.status}`))),
     ]);
 
-    // Process AnySearch results
-    if (anyP.status === 'fulfilled') {
-      const data = anyP.value as ApiResponse;
-      setAnyResults(data.results);
-      setAnyWarning(data.results.length === 0 ? (data.warning || 'AnySearch 暂无结果') : '');
-      setAnySelected(applySmartDefaults(data.results));
+    // Process DeepSeek results
+    if (dsP.status === 'fulfilled') {
+      const data = dsP.value as ApiResponse;
+      setDsResults(data.results);
+      setDsWarning(data.results.length === 0 ? (data.warning || 'DeepSeek 暂无结果') : '');
+      setDsSelected(applySmartDefaults(data.results));
     } else {
-      setAnyResults([]);
-      const reason = anyP.reason?.message || String(anyP.reason);
-      setAnyWarning(`AnySearch 搜索失败: ${reason}`);
-      setAnySelected(new Set());
+      setDsResults([]);
+      const reason = dsP.reason?.message || String(dsP.reason);
+      setDsWarning(`DeepSeek 搜索失败: ${reason}`);
+      setDsSelected(new Set());
     }
 
     // Process Sina results
@@ -140,9 +139,9 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
       setSinaSelected(new Set());
     }
 
-    // 默认展示新浪；仅当新浪失败、AnySearch 有结果时才自动切过去
-    if (sinaP.status === 'rejected' && anyP.status === 'fulfilled') {
-      setActiveTab('anysearch');
+    // 默认展示 DeepSeek；仅当 DeepSeek 失败、新浪有结果时才自动切过去
+    if (dsP.status === 'rejected' && sinaP.status === 'fulfilled') {
+      setActiveTab('sina');
     }
 
     setExpandedCards(new Set());
@@ -150,14 +149,14 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   };
 
   const setSelectedForTab = (tab: TabKey, val: Set<number>) => {
-    if (tab === 'anysearch') setAnySelected(val);
+    if (tab === 'deepseek') setDsSelected(val);
     else setSinaSelected(val);
   };
 
   const handleToggleResult = (idx: number) => {
     setSelectedForTab(activeTab, (() => {
-      const prev = activeTab === 'anysearch' ? anySelected : sinaSelected;
-      const next = new Set(prev);
+      const prev = activeTab === 'deepseek' ? dsSelected : sinaSelected;
+      const next = new Set<number>(prev);
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
       return next;
@@ -165,7 +164,7 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   };
 
   const handleSelectAll = () => {
-    const current = activeTab === 'anysearch' ? anySelected : sinaSelected;
+    const current = activeTab === 'deepseek' ? dsSelected : sinaSelected;
     if (current.size === results.length) {
       setSelectedForTab(activeTab, new Set());
     } else {
@@ -183,15 +182,15 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   };
 
   const handleImport = () => {
-    if (anySelected.size + sinaSelected.size === 0) return;
+    if (dsSelected.size + sinaSelected.size === 0) return;
 
-    const anyPicks = Array.from(anySelected)
+    const dsPicks = Array.from<number>(dsSelected)
       .sort((a, b) => a - b)
-      .map(i => anyResults[i]);
-    const sinaPicks = Array.from(sinaSelected)
+      .map(i => dsResults[i]);
+    const sinaPicks = Array.from<number>(sinaSelected)
       .sort((a, b) => a - b)
       .map(i => sinaResults[i]);
-    const allPicked = [...anyPicks, ...sinaPicks];
+    const allPicked = [...dsPicks, ...sinaPicks];
 
     const facts = allPicked.map(
       (r, i) => `[信源${i + 1}: ${r.source}] ${r.summary}`
@@ -206,15 +205,15 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
   };
 
   const handleReset = () => {
-    setAnyResults([]);
+    setDsResults([]);
     setSinaResults([]);
-    setAnySelected(new Set());
+    setDsSelected(new Set());
     setSinaSelected(new Set());
     setExpandedCards(new Set());
-    setAnyWarning('');
+    setDsWarning('');
     setSinaWarning('');
     setError('');
-    setActiveTab('sina');
+    setActiveTab('deepseek');
     setStep('input');
   };
 
@@ -453,7 +452,7 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
                 >
                   {TAB_LABELS[tab]}
                   <span className="ml-1.5 text-[0.65rem] font-mono text-muted">
-                    ({tab === 'anysearch' ? anyResults.length : sinaResults.length}篇)
+                    ({tab === 'deepseek' ? dsResults.length : sinaResults.length}篇)
                   </span>
                 </button>
               ))}
@@ -501,7 +500,7 @@ export default function TopicSearchPanel({ onImport }: TopicSearchPanelProps) {
           )}
 
           {/* Import button */}
-          {(anyResults.length > 0 || sinaResults.length > 0) && (
+          {(dsResults.length > 0 || sinaResults.length > 0) && (
             <div className="mt-4 pt-4 border-t border-border flex justify-end">
               <button
                 className="bg-ink text-paper px-8 py-3 font-bold text-[0.8rem] uppercase tracking-wider hover:bg-ink/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"

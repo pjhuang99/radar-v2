@@ -64,6 +64,13 @@ function extractDomain(url: string) {
 function stripHtml(s: string) {
   return s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
 }
+function rerankToScore(rerank: number): number {
+  if (rerank >= 2.5) return 5;
+  if (rerank >= 2.0) return 4;
+  if (rerank >= 1.5) return 3;
+  if (rerank >= 1.0) return 2;
+  return 1;
+}
 
 // ── Hotlist config ────────────────────────────────────────────────────────
 
@@ -121,7 +128,6 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     env: {
-      ANYSEARCH_API_KEY: process.env.ANYSEARCH_API_KEY ? `set (${process.env.ANYSEARCH_API_KEY.substring(0, 8)}...)` : "MISSING",
       DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ? "set" : "MISSING",
       ADMIN_PIN: process.env.ADMIN_PIN ? "set" : "MISSING",
     },
@@ -304,52 +310,57 @@ app.get("/api/finance-live", async (_req, res) => {
 const SEARCH_TIMEOUT = 7000;
 app.post("/api/search-topic", async (req, res) => {
   try {
-    const { topic, freshness = "month", engine = "anysearch" } = req.body;
+    const { topic, freshness = "month", engine = "deepseek" } = req.body;
     if (!topic || typeof topic !== "string" || !topic.trim()) return res.status(400).json({ error: "Topic is required" });
-    const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || "";
     const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
     const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-flash";
     const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
-    console.log(`[SearchTopic] "${topic}" engine=${engine} anysearchKey=${ANYSEARCH_KEY ? "set" : "missing"}`);
+    console.log(`[SearchTopic] "${topic}" engine=${engine} deepseekKey=${DEEPSEEK_KEY ? "set" : "missing"}`);
 
+    // ── DeepSeek Search: 原生权威分 + 摘要，直接映射，无需 LLM 二次打分 ──
+    if (engine === "deepseek") {
+      if (!DEEPSEEK_KEY) return res.status(500).json({ error: "DEEPSEEK_API_KEY not configured" });
+      const daysAgo: Record<string, number> = { day: 1, week: 7, month: 30 };
+      const after = new Date(Date.now() - (daysAgo[freshness] ?? 30) * 86400000).toISOString().slice(0, 10);
+      const query = `${topic} lang:zh after:${after}`;
+
+      let results: SearchResultEnriched[] = [];
+      try {
+        const r = await fetch(`${DEEPSEEK_BASE_URL.replace(/\/$/, "")}/tools/search`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${DEEPSEEK_KEY}` }, body: JSON.stringify({ query, count: 10, need_content: false }), signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
+        if (!r.ok) return res.status(502).json({ error: `DeepSeek search returned ${r.status}` });
+        const d = await r.json();
+        results = (d?.results || []).map((it: any): SearchResultEnriched => {
+          const authority = typeof it.authority === "number" ? it.authority : -1;
+          const rerank = typeof it.rerank_score === "number" ? it.rerank_score : 0;
+          return {
+            title: it.title || "", url: it.url || "", source: it.site_name || extractDomain(it.url || ""), snippet: it.summary || it.snippet || "", date: it.date || "", index: 0,
+            authorityLevel: authority >= 3 ? "high" : authority === 2 ? "medium" : "unknown",
+            authorityScore: authority >= 3 ? authority + 1 : 3,
+            relevanceScore: rerankToScore(rerank),
+            summary: it.summary || it.snippet || "",
+          };
+        });
+        console.log(`[SearchTopic] DeepSeek returned ${results.length} results`);
+      } catch (e: any) {
+        console.warn("[SearchTopic] DeepSeek search:", e.message);
+        return res.status(502).json({ error: `DeepSeek search failed: ${e.message}` });
+      }
+
+      if (results.length === 0) return res.json({ results: [], warning: "当前选题暂无搜索结果。建议调整关键词或扩大搜索范围。" });
+      results.sort((a, b) => b.authorityScore + b.relevanceScore - (a.authorityScore + a.relevanceScore));
+      const final = results.filter(r => r.authorityScore + r.relevanceScore >= 4).slice(0, 10);
+      return res.json({ results: final, query: topic, engine, totalFound: results.length, returned: final.length });
+    }
+
+    // ── Sina 兜底：无原生权威分/摘要，保留 LLM 二次打分 ──
     let rawResults: SearchResultRaw[] = [];
-    let usedAnySearch = false;
-
-    if (engine === "sina") {
-      try {
-        const r = await fetch(`https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(topic)}&pf=0&ps=0&page=1&sort=time&num=12&ie=utf-8`, { headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://search.sina.com.cn/" }, signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
-        if (r.ok) {
-          const d = await r.json();
-          rawResults = (d?.result?.list || []).map((r: any): SearchResultRaw => ({ title: (r.origin_title || r.title || "").replace(/<[^>]+>/g, ""), url: r.url || "", source: r.media || extractDomain(r.url || ""), snippet: stripHtml(r.intro || ""), date: r.datetime || "" }));
-        }
-      } catch (e: any) { console.warn("[SearchTopic] Sina:", e.message); }
-    } else if (ANYSEARCH_KEY) {
-      try {
-        const hints: Record<string, string> = { day: ' today OR "last 24 hours"', week: " this week OR 本周", month: ` ${new Date().getFullYear()} OR this month` };
-        const r = await fetch("https://api.anysearch.com/v1/search", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANYSEARCH_KEY}` }, body: JSON.stringify({ query: topic + (hints[freshness] || ""), max_results: 12 }), signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
-        if (r.ok) {
-          const d = await r.json();
-          rawResults = (d?.data?.results || d?.results || []).map((r: any): SearchResultRaw => ({ title: r.title || "", url: r.url || "", source: r.source || extractDomain(r.url || ""), snippet: r.snippet || r.content || "", date: r.date || r.published || "" }));
-          usedAnySearch = true;
-        }
-      } catch (e: any) { console.warn("[SearchTopic] AnySearch:", e.message); }
-    }
-
-    if (!usedAnySearch && engine !== "sina" && rawResults.length === 0) {
-      try {
-        const r = await fetch(`https://s.jina.ai/${encodeURIComponent(topic)}`, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/plain" }, signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
-        if (r.ok) {
-          const md = await r.text();
-          const blocks = md.split(/\n\n(?=Title:|\d+\.\s+|###\s)/);
-          for (const b of blocks) {
-            const tm = b.match(/(?:Title:|^#+\s*|^\d+\.\s*)\s*(.+?)(?:\n|$)/m);
-            const um = b.match(/(?:URL:|https?:\/\/\S+)/g);
-            const u = um ? um.map(x => x.replace("URL:", "").trim()).find(x => x.startsWith("http")) || "" : "";
-            if (tm && u) rawResults.push({ title: tm[1].trim(), url: u, source: extractDomain(u), snippet: b.substring(0, 300).replace(tm[0], "").trim(), date: "" });
-          }
-        }
-      } catch (e: any) { console.warn("[SearchTopic] Jina:", e.message); }
-    }
+    try {
+      const r = await fetch(`https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(topic)}&pf=0&ps=0&page=1&sort=time&num=12&ie=utf-8`, { headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://search.sina.com.cn/" }, signal: AbortSignal.timeout(SEARCH_TIMEOUT) });
+      if (r.ok) {
+        const d = await r.json();
+        rawResults = (d?.result?.list || []).map((r: any): SearchResultRaw => ({ title: (r.origin_title || r.title || "").replace(/<[^>]+>/g, ""), url: r.url || "", source: r.media || extractDomain(r.url || ""), snippet: stripHtml(r.intro || ""), date: r.datetime || "" }));
+      }
+    } catch (e: any) { console.warn("[SearchTopic] Sina:", e.message); }
 
     if (rawResults.length === 0) return res.json({ results: [], warning: "当前选题暂无搜索结果。建议调整关键词或扩大搜索范围。" });
 
@@ -366,7 +377,7 @@ app.post("/api/search-topic", async (req, res) => {
           const f = c.indexOf("{"), l = c.lastIndexOf("}");
           if (f !== -1 && l !== -1) {
             const p = JSON.parse(c.substring(f, l + 1));
-            const m = new Map((p.items || []).map((s: any) => [s.index, s]));
+            const m = new Map<number, any>((p.items || []).map((s: any) => [s.index, s]));
             for (const e of enriched) { const s = m.get(e.index); if (s) { e.authorityScore = s.authorityScore || e.authorityScore; e.relevanceScore = s.relevanceScore || e.relevanceScore; e.summary = s.summary || e.summary; } }
           }
         }
@@ -375,7 +386,7 @@ app.post("/api/search-topic", async (req, res) => {
 
     enriched.sort((a, b) => b.authorityScore + b.relevanceScore - (a.authorityScore + a.relevanceScore));
     const final = enriched.filter(r => r.authorityScore + r.relevanceScore >= 4).slice(0, 10);
-    res.json({ results: final, query: topic, engine, totalFound: rawResults.length, returned: final.length, usedAnySearch });
+    res.json({ results: final, query: topic, engine, totalFound: rawResults.length, returned: final.length });
   } catch (err: any) {
     console.error("[SearchTopic] Crash:", err.message);
     res.status(500).json({ error: err.message || "Search failed" });
@@ -399,19 +410,20 @@ app.get("/api/sina-search", async (req, res) => {
   }
 });
 
-// ── AnySearch Proxy (used by auto-retrieval) ────────────────────────────
-app.post("/api/anysearch-proxy", async (req, res) => {
+// ── DeepSeek Search Proxy (used by auto-retrieval) ─────────────────────
+app.post("/api/deepseek-search", async (req, res) => {
   const { query } = req.body;
-  const key = process.env.ANYSEARCH_API_KEY;
-  if (!key) return res.status(500).json({ error: "ANYSEARCH_API_KEY not configured" });
+  const key = process.env.DEEPSEEK_API_KEY;
+  if (!key) return res.status(500).json({ error: "DEEPSEEK_API_KEY not configured" });
+  const base = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
   try {
-    const r = await fetch("https://api.anysearch.com/v1/search", {
+    const r = await fetch(`${base.replace(/\/$/, "")}/tools/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ query, max_results: 8 }),
+      body: JSON.stringify({ query: `${query} lang:zh`, count: 8, need_content: false }),
       signal: AbortSignal.timeout(7000),
     });
-    if (!r.ok) return res.status(502).json({ error: `AnySearch returned ${r.status}` });
+    if (!r.ok) return res.status(502).json({ error: `DeepSeek search returned ${r.status}` });
     res.json(await r.json());
   } catch (e: any) {
     res.status(500).json({ error: e.message });

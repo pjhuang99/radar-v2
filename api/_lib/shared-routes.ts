@@ -86,6 +86,15 @@ function stripHtml(s: string): string {
   return s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
 }
 
+// Map DeepSeek rerank_score (0-3) to a 1-5 relevance score. ≥1.5 is the quality line.
+function rerankToScore(rerank: number): number {
+  if (rerank >= 2.5) return 5;
+  if (rerank >= 2.0) return 4;
+  if (rerank >= 1.5) return 3;
+  if (rerank >= 1.0) return 2;
+  return 1;
+}
+
 // ── Hotlist config (unified source list) ─────────────────────────────────────
 
 const HOTLIST_SOURCES: string[] = [
@@ -147,7 +156,6 @@ export function registerSharedRoutes(app: express.Express) {
     res.json({
       ok: true,
       env: {
-        ANYSEARCH_API_KEY: process.env.ANYSEARCH_API_KEY ? `set (${process.env.ANYSEARCH_API_KEY.substring(0, 8)}...)` : "MISSING",
         DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ? "set" : "MISSING",
         ADMIN_PIN: process.env.ADMIN_PIN ? "set" : "MISSING",
       },
@@ -383,9 +391,9 @@ export function registerSharedRoutes(app: express.Express) {
     }
 
     const mapping = HOTLIST_TYPE_MAP[type as string] || {
-      vvhan: type,
-      reall: type,
-      title: type,
+      vvhan: type as string,
+      reall: type as string,
+      title: type as string,
     };
 
     const urls = HOTLIST_SOURCES.map((tpl) =>
@@ -451,140 +459,130 @@ export function registerSharedRoutes(app: express.Express) {
     }
   });
 
-  // ── Topic Search (AnySearch / Sina / Jina) ───────────────────────────────
+  // ── Topic Search (DeepSeek Search / Sina fallback) ──────────────────────
   app.post("/api/search-topic", async (req, res) => {
     try {
-    const { topic, freshness = "month", engine = "anysearch" } = req.body;
+    const { topic, freshness = "month", engine = "deepseek" } = req.body;
     if (!topic || typeof topic !== "string" || topic.trim().length === 0) {
       return res.status(400).json({ error: "Topic is required" });
     }
 
-    const ANYSEARCH_KEY = process.env.ANYSEARCH_API_KEY || "";
     const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || "";
     const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-flash";
     const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
-
-    console.log(`[SearchTopic] Query: "${topic}" (freshness=${freshness}, engine=${engine}, anysearchKey=${ANYSEARCH_KEY ? "set" : "missing"}, deepseekKey=${DEEPSEEK_KEY ? "set" : "missing"})`);
-
-    // ── Step 1: Search ────────────────────────────────────────────────────
-    let rawResults: SearchResultRaw[] = [];
-    let usedAnySearch = false;
     const SEARCH_TIMEOUT = 7000; // keep under Vercel Hobby 10s limit
 
-    if (engine === "sina") {
-      try {
-        const sinaUrl = `https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(topic)}&pf=0&ps=0&page=1&sort=time&num=12&ie=utf-8`;
-        const sinaRes = await fetch(sinaUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://search.sina.com.cn/",
-          },
-          signal: AbortSignal.timeout(SEARCH_TIMEOUT),
-        });
-        if (sinaRes.ok) {
-          const data = await sinaRes.json();
-          rawResults = (data?.result?.list || []).map(
-            (r: any): SearchResultRaw => ({
-              title: (r.origin_title || r.title || "").replace(/<[^>]+>/g, ""),
-              url: r.url || "",
-              source: r.media || extractDomain(r.url || ""),
-              snippet: stripHtml(r.intro || ""),
-              date: r.datetime || "",
-            }),
-          );
-          console.log(`[SearchTopic] Sina returned ${rawResults.length} results`);
-        } else {
-          const errText = await sinaRes.text().catch(() => "");
-          console.warn(`[SearchTopic] Sina ${sinaRes.status}: ${errText.substring(0, 200)}`);
-        }
-      } catch (e: any) {
-        console.warn("[SearchTopic] Sina search failed:", e.message);
-      }
-    } else if (ANYSEARCH_KEY) {
-      try {
-        const freshnessHints: Record<string, string> = {
-          day: ' today OR "last 24 hours" OR 最新',
-          week: " this week OR 本周 OR recent",
-          month: ` ${new Date().getFullYear()} OR this month`,
-        };
-        const query = topic + (freshnessHints[freshness] || "");
+    console.log(`[SearchTopic] Query: "${topic}" (freshness=${freshness}, engine=${engine}, deepseekKey=${DEEPSEEK_KEY ? "set" : "missing"})`);
 
-        const searchRes = await fetch("https://api.anysearch.com/v1/search", {
+    // ── Engine: DeepSeek Search (native authority + summary, no LLM scoring) ──
+    if (engine === "deepseek") {
+      if (!DEEPSEEK_KEY) {
+        return res.status(500).json({ error: "DEEPSEEK_API_KEY not configured" });
+      }
+      const daysAgo: Record<string, number> = { day: 1, week: 7, month: 30 };
+      const after = new Date(Date.now() - (daysAgo[freshness] ?? 30) * 86400000).toISOString().slice(0, 10);
+      const query = `${topic} lang:zh after:${after}`;
+
+      let results: SearchResultEnriched[] = [];
+      try {
+        const searchRes = await fetch(`${DEEPSEEK_BASE_URL.replace(/\/$/, "")}/tools/search`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${ANYSEARCH_KEY}`,
+            Authorization: `Bearer ${DEEPSEEK_KEY}`,
           },
-          body: JSON.stringify({ query, max_results: 12 }),
+          body: JSON.stringify({ query, count: 10, need_content: false }),
           signal: AbortSignal.timeout(SEARCH_TIMEOUT),
         });
 
-        if (searchRes.ok) {
-          const data = await searchRes.json();
-          rawResults = (data?.data?.results || data?.results || []).map(
-            (r: any): SearchResultRaw => ({
-              title: r.title || "",
-              url: r.url || "",
-              source: r.source || extractDomain(r.url || ""),
-              snippet: r.snippet || r.content || r.description || "",
-              date: r.date || r.published || r.metadata?.date || "",
-            }),
-          );
-          usedAnySearch = true;
-          console.log(`[SearchTopic] AnySearch returned ${rawResults.length} results`);
+        if (!searchRes.ok) {
+          const errText = await searchRes.text().catch(() => "");
+          console.warn(`[SearchTopic] DeepSeek search ${searchRes.status}: ${errText.substring(0, 200)}`);
+          return res.status(502).json({ error: `DeepSeek search returned ${searchRes.status}` });
         }
+
+        const data = await searchRes.json();
+        const items: any[] = data?.results || [];
+        results = items.map((it: any): SearchResultEnriched => {
+          const authority = typeof it.authority === "number" ? it.authority : -1;
+          const rerank = typeof it.rerank_score === "number" ? it.rerank_score : 0;
+          return {
+            title: it.title || "",
+            url: it.url || "",
+            source: it.site_name || extractDomain(it.url || ""),
+            snippet: it.summary || it.snippet || "",
+            date: it.date || "",
+            index: 0,
+            authorityLevel: authority >= 3 ? "high" : authority === 2 ? "medium" : "unknown",
+            authorityScore: authority >= 3 ? authority + 1 : 3,
+            relevanceScore: rerankToScore(rerank),
+            summary: it.summary || it.snippet || "",
+          };
+        });
+        console.log(`[SearchTopic] DeepSeek returned ${results.length} results`);
       } catch (e: any) {
-        console.warn("[SearchTopic] AnySearch failed:", e.message);
+        console.warn("[SearchTopic] DeepSeek search failed:", e.message);
+        return res.status(502).json({ error: `DeepSeek search failed: ${e.message}` });
       }
+
+      if (results.length === 0) {
+        return res.json({
+          results: [],
+          warning: "当前选题暂无搜索结果。建议调整关键词或扩大搜索范围。",
+        });
+      }
+
+      results.sort((a, b) => b.authorityScore + b.relevanceScore - (a.authorityScore + a.relevanceScore));
+      const final = results.filter((r) => r.authorityScore + r.relevanceScore >= 4).slice(0, 10);
+      return res.json({
+        results: final,
+        query: topic,
+        engine,
+        totalFound: results.length,
+        returned: final.length,
+      });
     }
 
-    // Jina fallback
-    if (!usedAnySearch && engine !== "sina" && rawResults.length === 0) {
-      try {
-        const jinaRes = await fetch(`https://s.jina.ai/${encodeURIComponent(topic)}`, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/plain",
-          },
-          signal: AbortSignal.timeout(SEARCH_TIMEOUT),
-        });
-        if (jinaRes.ok) {
-          const md = await jinaRes.text();
-          const blocks = md.split(/\n\n(?=Title:|\d+\.\s+|###\s)/);
-          for (const block of blocks) {
-            const titleMatch = block.match(/(?:Title:|^#+\s*|^\d+\.\s*)\s*(.+?)(?:\n|$)/m);
-            const urlMatch = block.match(/(?:URL:|https?:\/\/\S+)/g);
-            const url = urlMatch
-              ? urlMatch
-                  .map((u) => u.replace("URL:", "").trim())
-                  .find((u) => u.startsWith("http")) || ""
-              : "";
-            if (titleMatch && url) {
-              rawResults.push({
-                title: titleMatch[1].trim(),
-                url,
-                source: extractDomain(url),
-                snippet: block.substring(0, 300).replace(titleMatch[0], "").trim(),
-                date: "",
-              });
-            }
-          }
-          console.log(`[SearchTopic] Jina fallback returned ${rawResults.length} results`);
-        }
-      } catch (e: any) {
-        console.warn("[SearchTopic] Jina fallback failed:", e.message);
+    // ── Engine: Sina (fallback, keeps LLM scoring) ────────────────────────
+    let rawResults: SearchResultRaw[] = [];
+
+    try {
+      const sinaUrl = `https://interface.sina.cn/homepage/search.d.json?t=&q=${encodeURIComponent(topic)}&pf=0&ps=0&page=1&sort=time&num=12&ie=utf-8`;
+      const sinaRes = await fetch(sinaUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Referer": "https://search.sina.com.cn/",
+        },
+        signal: AbortSignal.timeout(SEARCH_TIMEOUT),
+      });
+      if (sinaRes.ok) {
+        const data = await sinaRes.json();
+        rawResults = (data?.result?.list || []).map(
+          (r: any): SearchResultRaw => ({
+            title: (r.origin_title || r.title || "").replace(/<[^>]+>/g, ""),
+            url: r.url || "",
+            source: r.media || extractDomain(r.url || ""),
+            snippet: stripHtml(r.intro || ""),
+            date: r.datetime || "",
+          }),
+        );
+        console.log(`[SearchTopic] Sina returned ${rawResults.length} results`);
+      } else {
+        const errText = await sinaRes.text().catch(() => "");
+        console.warn(`[SearchTopic] Sina ${sinaRes.status}: ${errText.substring(0, 200)}`);
       }
+    } catch (e: any) {
+      console.warn("[SearchTopic] Sina search failed:", e.message);
     }
 
     if (rawResults.length === 0) {
       return res.json({
         results: [],
         warning: "当前选题暂无搜索结果。建议调整关键词或扩大搜索范围。",
-        usedFallback: !usedAnySearch,
       });
     }
 
-    // ── Step 2: DeepSeek scoring ──────────────────────────────────────────
+    // ── Step 2: DeepSeek LLM scoring (Sina has no native authority/summary) ──
     const enrichedResults: SearchResultEnriched[] = rawResults.map((r, i) => ({
       ...r,
       index: i + 1,
@@ -649,7 +647,7 @@ ${itemsForEval}
           const lastBrace = content.lastIndexOf("}");
           if (firstBrace !== -1 && lastBrace !== -1) {
             const parsed = JSON.parse(content.substring(firstBrace, lastBrace + 1));
-            const scoreMap = new Map((parsed.items || []).map((s: any) => [s.index, s]));
+            const scoreMap = new Map<number, any>((parsed.items || []).map((s: any) => [s.index, s]));
             for (const r of enrichedResults) {
               const score = scoreMap.get(r.index);
               if (score) {
@@ -679,7 +677,6 @@ ${itemsForEval}
       engine,
       totalFound: rawResults.length,
       returned: finalResults.length,
-      usedAnySearch,
     });
     } catch (err: any) {
       console.error("[SearchTopic] Unhandled error:", err.message, err.stack);
@@ -704,19 +701,20 @@ ${itemsForEval}
     }
   });
 
-  // ── AnySearch Proxy ────────────────────────────────────────────────────
-  app.post("/api/anysearch-proxy", async (req, res) => {
+  // ── DeepSeek Search Proxy (used by auto-retrieval) ─────────────────────
+  app.post("/api/deepseek-search", async (req, res) => {
     const { query } = req.body;
-    const key = process.env.ANYSEARCH_API_KEY;
-    if (!key) return res.status(500).json({ error: "ANYSEARCH_API_KEY not configured" });
+    const key = process.env.DEEPSEEK_API_KEY;
+    if (!key) return res.status(500).json({ error: "DEEPSEEK_API_KEY not configured" });
+    const base = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
     try {
-      const r = await fetch("https://api.anysearch.com/v1/search", {
+      const r = await fetch(`${base.replace(/\/$/, "")}/tools/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ query, max_results: 8 }),
+        body: JSON.stringify({ query: `${query} lang:zh`, count: 8, need_content: false }),
         signal: AbortSignal.timeout(7000),
       });
-      if (!r.ok) return res.status(502).json({ error: `AnySearch returned ${r.status}` });
+      if (!r.ok) return res.status(502).json({ error: `DeepSeek search returned ${r.status}` });
       res.json(await r.json());
     } catch (e: any) {
       res.status(500).json({ error: e.message });
