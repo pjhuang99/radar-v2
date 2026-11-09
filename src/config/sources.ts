@@ -24,6 +24,17 @@ export const AUTHORITY_WHITELIST: Record<string, string[]> = {
     'nbd.com.cn',
     '21jingji.com',
     'jiemian.com',
+    // 官方硬兜底：不接受模型判断，命中即 high
+    'gov.cn',          // 各级政府/部委（统计、央行、发改、财政等）
+    'cninfo.com.cn',   // 巨潮资讯
+    'sse.com.cn',      // 上交所
+    'szse.cn',         // 深交所
+    'bse.cn',          // 北交所
+    'neeq.com.cn',     // 股转系统
+    'cutv.com',        // 央视旗下
+    'gmw.cn',          // 光明网
+    'chinadaily.com.cn', // 中国日报
+    '.ce.cn',          // 经济日报（带点避免误命中 office.cn 之类）
     // 国际顶级权威
     'reuters.com',
     'bloomberg.com',
@@ -79,6 +90,17 @@ export function classifySource(
     }
   }
   return 'unknown';
+}
+
+/**
+ * 合并两个权威级别，取高者（DeepSeek 给分 vs 白名单兜底）
+ */
+export function maxAuthorityLevel(
+  a: 'high' | 'medium' | 'unknown',
+  b: 'high' | 'medium' | 'unknown'
+): 'high' | 'medium' | 'unknown' {
+  const order = { high: 3, medium: 2, unknown: 1 } as const;
+  return order[a] >= order[b] ? a : b;
 }
 
 /**

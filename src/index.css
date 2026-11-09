@@ -576,21 +576,21 @@ body::before {
 }
 
 .fact-item { margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid rgba(0,0,0,0.1); }
-.fact-original { color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent); margin-bottom:6px; font-size:0.85rem;}
-.fact-corrected { color:var(--green); font-weight:600; margin-bottom:6px; font-size:0.85rem;}
+.fact-original { color:var(--ink); text-decoration:none; border-bottom:1px solid rgba(0,0,0,0.25); margin-bottom:6px; font-size:0.85rem;}
+.fact-corrected { color:var(--ink); font-weight:600; margin-bottom:6px; font-size:0.85rem;}
 
-.fact-link { 
-  color:var(--blue); 
-  text-decoration:none; 
-  font-size:0.8rem; 
-  display:inline-block; 
-  margin-top:2px; 
-  background: rgba(26,58,122,0.05); 
-  padding:4px 8px; 
-  border-radius:3px; 
+.fact-link {
+  color:var(--ink);
+  text-decoration:none;
+  font-size:0.8rem;
+  display:inline-block;
+  margin-top:2px;
+  background: rgba(0,0,0,0.04);
+  padding:4px 8px;
+  border-radius:3px;
 }
 
-.fact-link:hover { background: rgba(26,58,122,0.1); text-decoration:underline; }
+.fact-link:hover { background: rgba(0,0,0,0.08); text-decoration:underline; }
 .fact-ok { color:var(--green); font-size:0.85rem; margin-bottom:8px;}
 
 .citation-link { 

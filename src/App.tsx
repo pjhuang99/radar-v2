@@ -1,8 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from "motion/react";
-import { Rss, Plus, Trash2, RefreshCw, ExternalLink, Volume2, SquarePen } from "lucide-react";
+import { Rss, Plus, Trash2, RefreshCw, ExternalLink, Volume2, SquarePen, ShieldCheck } from "lucide-react";
 import TopicSearchPanel from './components/TopicSearchPanel';
-import { classifySource } from './config/sources';
+import FactCheckPanel from './components/FactCheckPanel';
+import {
+  parseFactCheckReport,
+  buildFactCheckQueries,
+  performAutoRetrieval,
+  fetchUserSourceContents,
+  buildFactCheckPrompt,
+  type Correction,
+} from './lib/factcheck';
 
 // Single source of truth for the LLM. Model/key/endpoint are resolved on the
 // server from env (DEEPSEEK_MODEL / DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL), so a
@@ -37,13 +45,6 @@ interface RawItem {
   url: string;
   _sourceName: string;
   pubDate?: string;
-}
-
-interface Correction {
-  original: string;
-  corrected: string;
-  sourceLink: string;
-  id: number;
 }
 
 interface Draft {
@@ -319,6 +320,7 @@ export default function App() {
   const [rssItems, setRssItems] = useState<any[]>([]);
   const [financeLiveItems, setFinanceLiveItems] = useState<any[]>([]);
   const [showRssManager, setShowRssManager] = useState(false);
+  const [showFactCheckPanel, setShowFactCheckPanel] = useState(false);
   const [rssUrlInput, setRssUrlInput] = useState('');
   const [rssNameInput, setRssNameInput] = useState('');
   const [isFetchingRss, setIsFetchingRss] = useState(false);
@@ -1375,7 +1377,7 @@ ${research}
       let autoSources: { title: string; url: string; source: string; content: string; authorityLevel: string }[] = [];
       try {
         setStatusBar('正在自动检索独立权威信源...');
-        const queries = extractFactCheckQueries(draftTitle, draftBody);
+        const queries = await buildFactCheckQueries(callAI, draftTitle, draftBody);
         if (queries.length > 0) {
           setFactcheckItems(prev => [...prev.filter(item => (item as any)?.key !== 'auto-search' && (item as any)?.key !== 'auto-success' && (item as any)?.key !== 'auto-warn'),
             <div key="auto-search" className="flex items-center gap-2 text-[0.65rem] text-blue-600 bg-blue-50 p-2 rounded border border-blue-200 mt-2">
@@ -1411,31 +1413,15 @@ ${research}
 
       // ── Phase B: Fetch content from user-specified URLs ───────────────────
       let extraSourceContent = '';
-      const validUrls = factCheckUrls.filter(u => u && u.startsWith('http'));
       let scrapeCount = 0;
+      let validUrlsCount = 0;
 
-      if (validUrls.length > 0) {
+      if (factCheckUrls.some(u => u && u.startsWith('http'))) {
         setStatusBar('正在提取外部核查信源...');
-        const contents = await Promise.all(validUrls.map(async (url) => {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 35000); // Increased timeout to match backend
-            const res = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-              const text = await res.text();
-              if (text && text.length > 100) {
-                scrapeCount++;
-                return text;
-              }
-            }
-            return '';
-          } catch (e) {
-            console.warn(`Fetch timeout or error for ${url}`, e);
-            return '';
-          }
-        }));
-        extraSourceContent = contents.filter(c => c).map((c, i) => `【用户指定核查信源 ${i+1} 内容（最高优先级）】：\n${c.substring(0, 4000)}`).join('\n\n');
+        const fetched = await fetchUserSourceContents(factCheckUrls);
+        extraSourceContent = fetched.extraSourceContent;
+        scrapeCount = fetched.scrapeCount;
+        validUrlsCount = fetched.validCount;
         
         if (scrapeCount > 0) {
           setFactcheckItems(prev => [
@@ -1444,7 +1430,7 @@ ${research}
               ✅ 成功读取 {scrapeCount} 个核查信源，已设为最高优先级进行比对。
             </div>
           ]);
-        } else if (validUrls.length > 0) {
+        } else if (validUrlsCount > 0) {
           setFactcheckItems(prev => [
             ...prev,
             <div key="scrape-fail" className="text-[0.65rem] text-red-600 font-bold bg-red-50 p-2 rounded border border-red-200 mt-2 border-l-4">
@@ -1454,59 +1440,14 @@ ${research}
         }
       }
 
-      // Build auto-retrieved sources section
-      const autoSourceContent = autoSources.length > 0
-        ? autoSources.map((s, i) =>
-            `【自动检索信源 ${i+1}】（${s.authorityLevel === 'high' ? '一级权威' : '二级可信'}，独立检索验证）：\n标题: ${s.title}\n来源: ${s.source}\nURL: ${s.url}\n正文摘录: ${s.content || '抓取失败'}\n`
-          ).join('\n')
-        : '';
-
-      const sourceContext = (currentSourceContent || extraSourceContent || autoSourceContent)
-        ? [
-            `【多维参考信源清单】：\n${draftReferences.map((r, i) => `[来源${i+1}]：标题《${r.title}》, 链接: ${r.url}`).join('\n')}`,
-            '',
-            `【原始新闻参考素材】（写作时使用的素材，可能存在偏差）：\n${currentSourceContent || '无'}`,
-            '',
-            `【用户手动提供的"指定核查信源"】（最高优先级，若与正文冲突请务必指出）：\n${extraSourceContent || '无'}`,
-            '',
-            `【自动检索的独立核查信源】（AI 自动从互联网检索的权威媒体报道，完全独立于写作过程，提供第三方验证视角）：\n${autoSourceContent || '无'}`
-          ].join('\n')
-        : '【注意】：未提供任何素材，请完全依赖你的内部知识库，并对不确定的事实标注搜索建议。';
-
-    const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
-
-    const prompt = `你是一位职业事实核查员（Fact-Checker）。
-【重要基准时间】：${today}（注：请以此作为评估文章时效性的唯一基准，当前已是2026年）
-
-【核查任务】：
-请根据下方提供的【用户手动提供的"指定核查信源"】、【自动检索的独立核查信源】和【原始新闻参考素材】，对《待核查文章》进行深度审计。
-
-**特别注意**：
-- 如果【用户手动提供的"指定核查信源"】中包含的信息与《待核查文章》不符，请视其为严重事实错误（ERROR）。
-- 【自动检索的独立核查信源】是系统从互联网自动检索的第三方权威文章，它们与写作过程使用的素材完全独立。如果这些独立信源与《待核查文章》存在事实矛盾，这构成重要线索（标记为 ERROR 或 WARNING）。
-- 如果原始参考素材与独立信源一致但与《待核查文章》不符，也请标记为 ERROR。
-
-【核查基准】：
-${sourceContext}
-
-【输出格式】（严格按行输出，使用|分割，确保每行4个或5个字段）：
-ERROR|草稿中的严重事实错误|正确事实表述 (精准修正)|错误原因 (简要)|验证此事实的权威URL、[来源N]、[核查信源N] 或 [自动信源N]
-WARNING|表述偏颇/修辞不当/细节缺失|改进建议 (如何表述更客观或更充实)|建议原因 (如：存在立场偏差/数据支持不足)|验证参考URL、[来源N]、[核查信源N] 或 [自动信源N]
-OK|草稿中的正确表述|验证此事实的权威URL、[来源N]、[核查信源N] 或 [自动信源N]
-
-【溯源标签使用规范】：
-- 如果核实依据来自"指定核查信源"，请务必使用 [核查信源1]、[核查信源2] 等标签。
-- 如果核实依据来自"自动检索信源"，请使用 [自动信源1]、[自动信源2] 等标签。
-- 如果核实依据来自"原始参考素材"，请使用 [来源1]、[来源2] 等标签。
-- 如果是你的内部知识库验证，请提供具体的权威URL。
-
-【限制】：
-- "ERROR" 仅用于数据、时间、人物、逻辑关系的硬伤。
-- "WARNING" 用于主观偏见、情绪化用词、事实厚度不足等建议。
-- 不要输出任何开场白或总结。
-
-待核查文章：
-${draftBody}`;
+      // ── Phase C: Build prompt & call LLM ──────────────────────────────────
+      const prompt = buildFactCheckPrompt({
+        draftBody,
+        draftReferences,
+        currentSourceContent,
+        extraSourceContent,
+        autoSources,
+      });
       
       const report = await callAI(prompt, { maxTokens: 3000, temperature: 0.1 });
       setFactCheckReport(report);
@@ -1525,407 +1466,13 @@ ${draftBody}`;
       setIsFactchecking(false);
       setStatusBar('事实核查完成');
       playNotification();
-      logAdminBehavior('事实核查', draftTitle, `核查信源: ${validUrls.length}个手动 + ${autoSources.length}个自动检索`, validUrls.length + autoSources.length, draftBody.length, draftBody, activeOperator);
+      logAdminBehavior('事实核查', draftTitle, `核查信源: ${validUrlsCount}个手动 + ${autoSources.length}个自动检索`, validUrlsCount + autoSources.length, draftBody.length, draftBody, activeOperator);
       setTimeout(() => setStatusBar('就绪'), 3000);
     } catch (e: any) {
       setFactcheckItems([<div key="error" className="text-accent font-mono">核查中断: {e.message}</div>]);
       setIsFactchecking(false);
       setStatusBar('核查失败');
     }
-  };
-
-  const parseFactCheckReport = (report: string, refs: any[], sUrl: string, sTitle: string, userFactUrls: string[] = [], autoSourceUrls: string[] = []) => {
-    const lines = report.split('\n').filter(l => l.trim() && (l.includes('|')));
-    
-    if (lines.length === 0) {
-      return {
-        items: [<div key="error" className="text-muted italic">AI 未发现明显的硬性事实错误，或未能按规范生成报告。建议手动核对关键数据。</div>],
-        corrections: [] as Correction[]
-      };
-    }
-
-    const items: React.ReactNode[] = [];
-    const corrections: Correction[] = [];
-
-    lines.forEach((line, index) => {
-      const p = line.split('|');
-      if (p.length < 2) return;
-
-      const isError = line.startsWith('ERROR');
-      const isWarning = line.startsWith('WARNING');
-      const isOk = line.startsWith('OK|');
-      
-      const rawUrlOrTag = ((isError || isWarning) ? p[4] : p[2]) || '';
-
-      // Extract clean domain from URL for display
-      const domainLabel = (url: string): string => {
-        try {
-          const host = new URL(url).hostname.replace(/^www\./, '');
-          return host.length > 30 ? host.substring(0, 28) + '…' : host;
-        } catch { return ''; }
-      };
-
-      // Parse combined source string: split by 、, ,, ; etc. into individual links
-      const parseSourceLinks = (raw: string): { link: string; label: string }[] => {
-        if (!raw || !raw.trim()) return [];
-        const parts = raw.split(/[、,；;，\n]+/).map(s => s.trim()).filter(Boolean);
-        return parts.map(part => {
-          if (part.startsWith('http')) {
-            const d = domainLabel(part);
-            return { link: part, label: `🔗 ${d || '外部验证'}` };
-          } else if (part.includes('[核查信源')) {
-            const m = part.match(/\[核查信源\s*(\d+)\]/);
-            const idx = m ? parseInt(m[1]) - 1 : 0;
-            const url = userFactUrls[idx] || sUrl || '';
-            const d = domainLabel(url);
-            return { link: url, label: `🔗 ${d || '指定核查信源'}` };
-          } else if (part.includes('[自动信源')) {
-            const m = part.match(/\[自动信源\s*(\d+)\]/);
-            const idx = m ? parseInt(m[1]) - 1 : 0;
-            const url = autoSourceUrls[idx] || '';
-            const d = domainLabel(url);
-            return { link: url, label: `🤖 ${d || '自动检索信源'}` };
-          } else if (part.includes('[来源')) {
-            const m = part.match(/\[来源(\d+)\]/);
-            const idx = m ? parseInt(m[1]) - 1 : 0;
-            const ref = refs[idx];
-            const url = ref?.url || sUrl || '';
-            const d = domainLabel(url);
-            return { link: url, label: `🔗 ${d || ref?.source || '原始对照'}` };
-          } else {
-            const url = sUrl || (refs[0]?.url || `https://search.sina.com.cn/search?q=${encodeURIComponent(sTitle)}&tp=news`);
-            const d = domainLabel(url);
-            return { link: url, label: `🔗 ${d || '原始素材对照'}` };
-          }
-        });
-      };
-
-      const sourceLinks = parseSourceLinks(rawUrlOrTag);
-      // Fallback if parsing produced nothing
-      if (!sourceLinks.length) {
-        sourceLinks.push({
-          link: sUrl || (refs[0]?.url || `https://search.sina.com.cn/search?q=${encodeURIComponent(sTitle)}&tp=news`),
-          label: '🔗 原始素材对照'
-        });
-      }
-      // Deduplicate by URL, keeping the one with the more informative label
-      const seenUrls = new Set<string>();
-      const dedupedLinks: { link: string; label: string }[] = [];
-      for (const sl of sourceLinks) {
-        if (!sl.link || seenUrls.has(sl.link)) continue;
-        seenUrls.add(sl.link);
-        dedupedLinks.push(sl);
-      }
-      const hasSpecificUrl = dedupedLinks.some(l => l.link.startsWith('http'));
-      const primaryLink = dedupedLinks[0]?.link || '';
-
-      if (isError || isWarning) {
-        const severityTag = isError ? 'ERR' : 'WARN';
-        const severityClass = isError ? 'bg-accent' : 'bg-blue text-white';
-
-        corrections.push({ original: p[1], corrected: p[2], sourceLink: primaryLink, id: index });
-
-        items.push(
-          <div className="fact-item group" key={index}>
-            <div className="flex items-start gap-2 mb-2">
-              <span className={`${severityClass} text-[0.6rem] px-1.5 py-0.5 font-bold mt-1`}>{severityTag}</span>
-              <div className="flex-1">
-                <div className="fact-original">原文: {p[1]}</div>
-                <div className="fact-corrected text-blue">{isWarning ? '建议: ' : '修正: '}{p[2]}</div>
-                <div className="text-[0.7rem] text-muted mt-1 italic">{isWarning ? '理由: ' : '原因: '}{p[3]}</div>
-              </div>
-            </div>
-            <div className="flex gap-2 ml-8 flex-wrap">
-              {dedupedLinks.map((sl, i) => (
-                <a key={i} className="fact-link" href={sl.link} target="_blank" rel="noreferrer">{sl.label}</a>
-              ))}
-              {!hasSpecificUrl && (
-                <a className="fact-link bg-muted/10 text-muted" href={`https://search.sina.com.cn/search?q=${encodeURIComponent(p[1])}&tp=news`} target="_blank" rel="noreferrer">🌐 联机检索</a>
-              )}
-            </div>
-          </div>
-        );
-      } else if (isOk) {
-        items.push(
-          <div className="fact-item group" key={index}>
-            <div className="flex items-start gap-2 mb-2">
-              <span className="bg-green text-white text-[0.6rem] px-1.5 py-0.5 font-bold mt-1">OK</span>
-              <div className="flex-1">
-                <div className="fact-corrected text-green">核实一致：{p[1]}</div>
-              </div>
-            </div>
-            <div className="flex gap-2 ml-8 flex-wrap">
-              {dedupedLinks.map((sl, i) => (
-                <a key={i} className="fact-link" href={sl.link} target="_blank" rel="noreferrer">{sl.label}</a>
-              ))}
-              {!hasSpecificUrl && (
-                <a className="fact-link bg-muted/10 text-muted" href={`https://search.sina.com.cn/search?q=${encodeURIComponent(p[1])}&tp=news`} target="_blank" rel="noreferrer">🌐 联机检索</a>
-              )}
-            </div>
-          </div>
-        );
-      }
-    });
-
-    return { items, corrections };
-  };
-
-  // ── Auto-Retrieval: Extract search queries from draft ──────────────────────
-  const extractFactCheckQueries = (title: string, body: string): string[] => {
-    const queries: string[] = [];
-
-    // ── Helpers ────────────────────────────────────────────────────────────
-    const isTemplateText = (text: string): boolean => {
-      if (/【|】/.test(text)) return true;
-      if (/核心论点|核心观点|摘要|字以内|标题建议|备选标题/.test(text)) return true;
-      if (/文章开头|金句|结尾|排版|标记|标签/.test(text)) return true;
-      if (/^\d+[\.\、\s]/.test(text) && text.length < 10) return true;
-      if (/^[#\-•·\*▸]+/.test(text)) return true;
-      return false;
-    };
-
-    // English proper nouns: handles SpaceX, Tesla, iPhone, GDP, AI etc.
-    const extractEnglishNouns = (text: string): string[] => {
-      const matches = text.match(/[A-Z][a-zA-Z]{2,}(?:\'?s)?(?:\s*\d+)?/g);
-      return matches ? [...new Set(matches.map(m => m.trim()))] : [];
-    };
-
-    // Extract Chinese key terms: short meaningful chunks (2-6 chars)
-    // from segments that look like named entities (start of clauses, contain key chars)
-    const extractChineseTerms = (text: string): string[] => {
-      const terms: string[] = [];
-      // Split into clauses
-      const clauses = text.split(/[，,。！!？?；;：:、\n]+/).map(c => c.trim());
-      for (const clause of clauses) {
-        if (!clause || isTemplateText(clause)) continue;
-        // From each clause, take a short leading phrase (Chinese subjects are at the start)
-        // Take up to 8 chars, but try to break at common word boundaries
-        const cnStart = clause.replace(/^[A-Za-z0-9s]+/, '');
-        if (!cnStart || cnStart.length < 2) continue;
-        const short = cnStart.substring(0, Math.min(cnStart.length, 7));
-        // Trim trailing particles
-        const trimmed = short.replace(/[的了着过是的有在和与或到对从向把被让给为因以能会可要也还就已才又更很都只]+$/, '');
-        if (trimmed.length >= 2 && /[一-鿿]/.test(trimmed)) {
-          terms.push(trimmed);
-        }
-      }
-      return terms.slice(0, 6); // max 6 Chinese terms
-    };
-
-    // ── Collect entities ────────────────────────────────────────────────────
-    const cleanTitle = (title || '').trim();
-    const cleanBody = (body || '').replace(/<[^>]*>/g, '').replace(/【.*?】/g, '').trim();
-
-    // English nouns from title + body
-    const enNouns = [...new Set([
-      ...extractEnglishNouns(cleanTitle),
-      ...extractEnglishNouns(cleanBody.substring(0, 800)),
-    ])];
-
-    // Chinese terms from title (highest signal)
-    const titleCnTerms = cleanTitle && !isTemplateText(cleanTitle)
-      ? extractChineseTerms(cleanTitle)
-      : [];
-
-    // Body: only extract English nouns (Chinese clauses from body are too noisy)
-    const skipHeader = Math.min(150, Math.floor(cleanBody.length * 0.15));
-    const bodySample = cleanBody.substring(skipHeader, skipHeader + 600);
-    const bodyEnNouns = bodySample ? extractEnglishNouns(bodySample) : [];
-    const allEnNouns = [...new Set([...enNouns, ...bodyEnNouns])];
-
-    // ── Build short keyword queries (≤30 chars, space-separated) ──────────
-    const buildQ = (terms) => {
-      const deduped = [...new Set(terms.filter(Boolean))];
-      return deduped.join(' ').substring(0, 30).trim();
-    };
-
-    // Query 1: English nouns + first Chinese terms from title
-    const q1Terms = [...allEnNouns.slice(0, 2), ...titleCnTerms.slice(0, 2)];
-    const q1 = buildQ(q1Terms);
-    if (q1.length >= 3) queries.push(q1);
-
-    // Query 2: Remaining Chinese title terms (different combination)
-    const usedInQ1 = new Set(q1Terms);
-    const q2Terms = titleCnTerms.filter(t => !usedInQ1.has(t)).slice(0, 3);
-    const q2 = buildQ(q2Terms);
-    if (q2.length >= 3 && !queries.includes(q2)) queries.push(q2);
-
-    // Query 3: Any leftover English nouns from body
-    if (queries.length < 3) {
-      const usedAll = new Set([...q1Terms, ...q2Terms]);
-      const extraEn = allEnNouns.filter(e => !usedAll.has(e)).slice(0, 3);
-      const q3 = buildQ(extraEn);
-      if (q3.length >= 3 && !queries.includes(q3)) queries.push(q3);
-    }
-
-    // ── Fallback: if very few terms, use title segments directly ────────────
-    if (queries.length < 2 && cleanTitle) {
-      const segs = cleanTitle
-        .split(/[，,。！!？?；;：:、\s]+/)
-        .map(s => s.trim())
-        .filter(s => s.length >= 4 && s.length <= 15 && !isTemplateText(s));
-      for (const seg of segs) {
-        if (queries.length >= 3) break;
-        const short = seg.substring(0, 12);
-        if (!queries.includes(short)) queries.push(short);
-      }
-    }
-
-    return queries.slice(0, 3).filter(q => q.length >= 3);
-  };
-
-  // ── Auto-Retrieval: Search + scrape authoritative independent sources ──────
-  const performAutoRetrieval = async (
-    queries: string[]
-  ): Promise<{ title: string; url: string; source: string; content: string; authorityLevel: string }[]> => {
-    if (!queries.length) return [];
-
-    // Step 1: Search Sina + DeepSeek (parallel, proxied through backend)
-    const SEARCH_TIMEOUT = 7000;
-
-    // Common result mapper for both engines
-    const MEDIA_DOMAIN_MAP: Record<string, string> = {
-      '界面新闻': 'jiemian.com', '澎湃新闻': 'thepaper.cn', '财新': 'caixin.com',
-      '新华社': 'xinhuanet.com', '央视新闻': 'cctv.com', '中新网': 'chinanews.com',
-      '第一财经': 'yicai.com', '经济观察报': 'eeo.com.cn', '21世纪经济报道': '21jingji.com',
-      '每日经济新闻': 'nbd.com.cn', '证券时报': 'stcn.com', '36氪': '36kr.com',
-      '虎嗅': 'huxiu.com', '钛媒体': 'tmtpost.com', '新浪科技': 'sina.com.cn',
-    };
-    const mapResult = (title: string, url: string, source: string): RawResult => {
-      const mappedDomain = MEDIA_DOMAIN_MAP[source] || '';
-      return {
-        title: (title || '').replace(/<[^>]+>/g, ''),
-        url: url || '',
-        source: source || '',
-        authorityLevel: classifySource(mappedDomain || url),
-        authorityScore: mappedDomain ? 4 : (source ? 3 : 2),
-        relevanceScore: 3,
-      };
-    };
-
-    const allSearches = queries.flatMap(query => [
-      // Engine 1: Sina News (fast, no auth)
-      (async () => {
-        const ctrl = new AbortController();
-        const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
-        try {
-          const res = await fetch(`/api/sina-search?q=${encodeURIComponent(query)}`, {
-            signal: ctrl.signal,
-          });
-          if (!res.ok) return [] as RawResult[];
-          const data = await res.json();
-          return ((data?.result?.list || []) as any[]).map((r: any) => {
-            const r2 = mapResult(r.origin_title || r.title || '', r.url || '', r.media || '');
-            (r2 as any).snippet = (r.intro || '').replace(/<[^>]+>/g, '').trim();
-            return r2;
-          });
-        } catch { return [] as RawResult[]; }
-        finally { clearTimeout(tid); }
-      })(),
-      // Engine 2: DeepSeek Search (proxied through backend)
-      (async () => {
-        const ctrl = new AbortController();
-        const tid = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT);
-        try {
-          const res = await fetch('/api/deepseek-search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query }),
-            signal: ctrl.signal,
-          });
-          if (!res.ok) return [] as RawResult[];
-          const data = await res.json();
-          const results = data?.results || [];
-          return (results as any[]).map((r: any) => {
-            const authority = typeof r.authority === 'number' ? r.authority : -1;
-            const rerank = typeof r.rerank_score === 'number' ? r.rerank_score : 0;
-            const source = r.site_name || (r.url ? new URL(r.url).hostname : '');
-            const r2 = mapResult(r.title || '', r.url || '', source);
-            r2.authorityLevel = authority >= 3 ? 'high' : authority === 2 ? 'medium' : 'unknown';
-            r2.authorityScore = authority >= 3 ? authority + 1 : 3;
-            r2.relevanceScore = rerank >= 2.5 ? 5 : rerank >= 2.0 ? 4 : rerank >= 1.5 ? 3 : rerank >= 1.0 ? 2 : 1;
-            (r2 as any).snippet = r.summary || r.snippet || '';
-            return r2;
-          });
-        } catch { return [] as RawResult[]; }
-        finally { clearTimeout(tid); }
-      })(),
-    ]);
-
-    interface RawResult {
-      title: string; url: string; source: string; authorityLevel: string;
-      authorityScore: number; relevanceScore: number;
-    }
-
-    const settled = await Promise.allSettled(allSearches);
-    const allRawResults: RawResult[] = [];
-    for (const r of settled) {
-      if (r.status === 'fulfilled') allRawResults.push(...r.value);
-    }
-
-    console.log(`[AutoRetrieval] ${queries.length} queries → ${allRawResults.length} raw results (Sina + DeepSeek)`);
-
-    if (!allRawResults.length) return [];
-
-    // Step 2: Deduplicate by URL, sort by authority
-    const seenUrls = new Set<string>();
-    const sorted = allRawResults
-      .filter(r => {
-        if (!r.url || seenUrls.has(r.url)) return false;
-        seenUrls.add(r.url);
-        return true;
-      })
-      .sort((a, b) => {
-        const levelOrder = { high: 3, medium: 2, unknown: 1 };
-        return (levelOrder[b.authorityLevel as keyof typeof levelOrder] || 0)
-             - (levelOrder[a.authorityLevel as keyof typeof levelOrder] || 0);
-      });
-
-    // Pick: prefer high/medium, fall back to unknown
-    const authoritative = sorted.filter(r => r.authorityLevel === 'high' || r.authorityLevel === 'medium');
-    const picked = authoritative.length >= 2
-      ? authoritative.slice(0, 3)
-      : [...authoritative, ...sorted.filter(r => r.authorityLevel === 'unknown')].slice(0, 3);
-
-    console.log(`[AutoRetrieval] ${authoritative.length} authoritative, picked ${picked.length}: ${picked.map(p => p.source).join(', ')}`);
-
-    if (!picked.length) return [];
-
-    // Step 3: Try to scrape full text (best-effort, fast timeout since Jina may be down)
-    const scraped = await Promise.allSettled(
-      picked.map(async (r) => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-        try {
-          const res = await fetch(`/api/scrape?url=${encodeURIComponent(r.url)}`, { signal: controller.signal });
-          if (!res.ok) return '';
-          const text = await res.text();
-          if (text.startsWith('{"error"') || text.startsWith('SCRAPE_BLOCKED')) return '';
-          return text;
-        } catch {
-          return '';
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      })
-    );
-
-    // Step 4: Assemble results — prefer scraped full text, fall back to search snippet
-    return picked
-      .map((r, i) => {
-        const scrapedContent = scraped[i]?.status === 'fulfilled' ? (scraped[i].value || '') : '';
-        const hasFullContent = scrapedContent.length > 100;
-        return {
-          title: r.title,
-          url: r.url,
-          source: r.source,
-          authorityLevel: r.authorityLevel,
-          content: hasFullContent
-            ? scrapedContent.substring(0, 3000)
-            : ((r as any).snippet || '').substring(0, 500), // fall back to search snippet
-        };
-      })
-      .filter(r => r.content && r.content.length > 30); // keep if any content available
   };
 
   const copyDraft = () => {
@@ -2285,7 +1832,7 @@ ${combinedContent}
 
   return (
     <div className="min-h-screen">
-      {!showDraft && (
+      {!showDraft && !showFactCheckPanel && (
         <div className="floating-status-wrap">
           <div className={`status-bar ${statusBar !== '就绪' ? 'busy' : ''}`}>
             {statusBar !== '就绪' ? (
@@ -2315,8 +1862,15 @@ ${combinedContent}
           </div>
         </div>
         <div className="flex items-center gap-2 md:gap-4 flex-wrap justify-end">
-          <button 
-            className="cat-btn !bg-ink !text-paper border-none flex items-center gap-2" 
+          <button
+            className="cat-btn !bg-ink !text-paper border-none flex items-center gap-2"
+            style={{ fontSize: '0.75rem', padding: '6px 15px' }}
+            onClick={() => setShowFactCheckPanel(true)}
+          >
+            <ShieldCheck size={14} /> 溯源核查
+          </button>
+          <button
+            className="cat-btn !bg-ink !text-paper border-none flex items-center gap-2"
             style={{ fontSize: '0.75rem', padding: '6px 15px' }}
             onClick={() => setShowRssManager(true)}
           >
@@ -3206,6 +2760,14 @@ ${combinedContent}
         </motion.div>
       )}
       </AnimatePresence>
+
+      {/* Standalone Fact-Check Panel */}
+      {showFactCheckPanel && (
+        <FactCheckPanel
+          onClose={() => setShowFactCheckPanel(false)}
+          callAI={callAI}
+        />
+      )}
 
       {/* RSS Manager Modal */}
       <AnimatePresence>
