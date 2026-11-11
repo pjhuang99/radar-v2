@@ -121,6 +121,18 @@ if (typeof window !== 'undefined') {
 
 const INITIAL_MOCK_AUDIT_LOGS = [
   {
+    id: "mock-log-0",
+    timestamp: new Date(Date.now() - 1800000).toISOString(),
+    epoch: Date.now() - 1800000,
+    action: "溯源核查",
+    title: "存量房贷利率下调落地：银行让利空间与提前还贷潮的再平衡",
+    draftMeta: "[ 模型: DeepSeek | 自动检索 5 源/4 组 | 手动链接 1 个 | 结论 4 条 ]",
+    referencesCount: 6,
+    wordCount: 1480,
+    operator: "peijian@gmail.com",
+    articleBody: "【溯源核查记录】\n时间：2026-05-26 10:12\n标题：存量房贷利率下调落地：银行让利空间与提前还贷潮的再平衡\n正文：1480 字\n检索词：存量房贷利率下调 公告 / 银行净息差 2026 / 提前还贷 规模\n自动信源：5 个（4 组独立信源）\n手动链接：1 个（成功读取 1 个）\n\n结论：共 4 条 —— 相符 2 / 争议 1 / 不符 1 / 未核实 0\n──────────\n1. [相符·风险低] 央行于本月宣布下调存量房贷利率约 0.5 个百分点\n   结论：与官方公告一致，执行时间为 11 月 1 日。\n   依据：央行官网公告原文与三家主要银行实施细则均载明同一时间点。\n   来源：pbc.gov.cn、icbc.com.cn、ccb.com\n2. [不符·风险高] 文章称“本次调整覆盖全部存量房贷，无一例外”\n   结论：与事实不符，仅覆盖首套房与符合条件的二套房贷款，公积金贷款不在此次调整范围内。\n   依据：多家银行答疑明确列出除外情形。\n   来源：bankofchina.com、21jingji.com\n3. [存在争议·风险中] 若存量利率全面下调，银行净息差将收窄 15 个基点\n   结论：不同机构测算区间为 8–20 个基点，15 个基点属中性估计，宜标注“机构测算”。\n   依据：券商研报口径存在差异。\n   来源：eastmoney.com\n4. [相符·风险低] 提前还贷申请量在政策落地后一周环比下降约三成\n   结论：与媒体报道的银行网点反馈基本一致。\n   依据：多家媒体走访口径接近。\n   来源：yicai.com、stcn.com"
+  },
+  {
     id: "mock-log-1",
     timestamp: "2026-05-26T01:45:00Z",
     epoch: Date.now() - 3600000 * 1,
@@ -157,6 +169,27 @@ const INITIAL_MOCK_AUDIT_LOGS = [
     articleBody: "#### 引言：关税大棒下的贸易反思\n\n今年欧洲对华新能源汽车加征额外平均关税落地，标志着仅依靠传统物理出口的低溢价扩张模式宣告阶段性结束。然而，国内一些乐观叙事对此企图蔑视，认为通过第三国转运、中亚渠道即可消解摩擦。我们必须冷眼指出：这种战术机巧，正在掩盖我们在底层法律合规和本土化研发合作上的战略懒惰。\n\n#### 一、第三国重包装的合规红线漏洞\n依靠在北非或东南亚建立简易散件拼装（KD）工厂，试图通过“洗产地”避开原产地溯源，这是完全小看欧盟反规避调查部门的专业度。从电芯原产地到车机控制软件的编译所属权，当下的穿透性合规审计已经可以追溯至二级、三级零配件供应商极其源头。在欧盟数字电池护照（Digital Battery Passport）与相关法规层层盘查下，任何不具备真实本土采购、本地员工吸纳、本地产值比例小于40%的投机工厂，最终都将在2027年之前的过渡期遭遇更具毁灭性的二次定向清算。\n\n#### 二、以“产研出海”替代“产力外流”的重塑之路\n真正的出海是从单纯的产品出口，转变为本土化的研发深度融合。例如部分优秀厂商已经开始在匈牙利、德国建立全谱系工程研发中心，让国内的软硬件技术优势与西欧本地的供应链及汽车安全标准体系深度嵌套。不仅是转移过剩产能，更是通过本地税收贡献与高质量工程师工岗位的创设，把对抗升级为共同利益绑定。这是从“外来颠覆者”向“本地共建者”身份演进的华丽折返。"
   }
 ];
+
+type AdminActionCategory = 'writing' | 'analysis' | 'factcheck' | 'draft' | 'other';
+type AdminActionFilter = 'all' | AdminActionCategory;
+
+const ADMIN_FILTER_TABS: { key: AdminActionFilter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'writing', label: '写作' },
+  { key: 'analysis', label: 'AI选题' },
+  { key: 'factcheck', label: '核查' },
+  { key: 'draft', label: '草稿' },
+  { key: 'other', label: '其他' }
+];
+
+const categorizeAuditAction = (action: string): AdminActionCategory => {
+  const a = action || '';
+  if (a.includes('核查')) return 'factcheck';
+  if (a.includes('选题')) return 'analysis';
+  if (a.includes('写作') || a.includes('创作') || a.includes('排版')) return 'writing';
+  if (a.includes('草稿')) return 'draft';
+  return 'other';
+};
 
 export default function App() {
   const [activeOperator, setActiveOperator] = useState<string>(() => {
@@ -207,6 +240,7 @@ export default function App() {
   });
   const [selectedLogCache, setSelectedLogCache] = useState<any | null>(null);
   const [adminSearchTerm, setAdminSearchTerm] = useState('');
+  const [adminActionFilter, setAdminActionFilter] = useState<AdminActionFilter>('all');
 
   const playNotification = async () => {
     console.log('🔔 Notification triggered');
@@ -637,10 +671,12 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
     const styles: Record<string, number> = {};
     
     adminLogs.forEach(log => {
-      if (log.action === 'AI选题分析') counts.analysis++;
-      else if (log.action === '开始创作' || log.action === '自由写作') counts.writing++;
-      else if (log.action === '事实核查') counts.factcheck++;
-      else if (log.action === '保存草稿') counts.drafts++;
+      // 与日志表筛选条共用同一套分类，避免统计卡和筛选项条数对不上
+      const category = categorizeAuditAction(log.action);
+      if (category === 'analysis') counts.analysis++;
+      else if (category === 'writing') counts.writing++;
+      else if (category === 'factcheck') counts.factcheck++;
+      else if (category === 'draft') counts.drafts++;
 
       if (log.draftMeta) {
         const stanceNames = [
@@ -2766,6 +2802,17 @@ ${combinedContent}
         <FactCheckPanel
           onClose={() => setShowFactCheckPanel(false)}
           callAI={callAI}
+          onAuditLog={(entry) =>
+            logAdminBehavior(
+              '溯源核查',
+              entry.title,
+              entry.draftMeta,
+              entry.refCount,
+              entry.wordCount,
+              entry.digest,
+              activeOperator
+            )
+          }
         />
       )}
 
@@ -2996,29 +3043,49 @@ ${combinedContent}
                   return (
                     <>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div className="bg-white border border-border p-4 shadow-sm relative overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setAdminActionFilter('all')}
+                          title="显示全部行为日志"
+                          className={`bg-white border p-4 shadow-sm relative overflow-hidden text-left cursor-pointer transition-colors ${adminActionFilter === 'all' ? 'border-ink' : 'border-border hover:border-ink/50'}`}
+                        >
                           <span className="text-muted text-[0.65rem] tracking-wider uppercase font-bold block mb-1">总触发次数</span>
                           <span className="text-3xl font-black font-mono text-ink">{total}</span>
                           <div className="absolute right-2 bottom-2 text-ink/10 font-bold text-5xl select-none font-mono">#</div>
-                        </div>
+                        </button>
 
-                        <div className="bg-white border border-border p-4 shadow-sm relative overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setAdminActionFilter('writing')}
+                          title="只看写作类日志"
+                          className={`bg-white border p-4 shadow-sm relative overflow-hidden text-left cursor-pointer transition-colors ${adminActionFilter === 'writing' ? 'border-accent' : 'border-border hover:border-accent/50'}`}
+                        >
                           <span className="text-muted text-[0.65rem] tracking-wider uppercase font-bold block mb-1">AI排版写作/自由创作</span>
                           <span className="text-3xl font-black font-mono text-accent">{stats.counts.writing}</span>
                           <div className="absolute right-2 bottom-2 text-accent/10 font-bold text-5xl select-none font-mono">✍</div>
-                        </div>
+                        </button>
 
-                        <div className="bg-white border border-border p-4 shadow-sm relative overflow-hidden">
-                          <span className="text-gold border-gold/10 text-[0.65rem] tracking-wider uppercase font-bold block mb-1">事实核查审计</span>
+                        <button
+                          type="button"
+                          onClick={() => setAdminActionFilter('factcheck')}
+                          title="只看核查类日志"
+                          className={`bg-white border p-4 shadow-sm relative overflow-hidden text-left cursor-pointer transition-colors ${adminActionFilter === 'factcheck' ? 'border-gold' : 'border-border hover:border-gold/50'}`}
+                        >
+                          <span className="text-gold border-gold/10 text-[0.65rem] tracking-wider uppercase font-bold block mb-1">溯源核查审计</span>
                           <span className="text-3xl font-black font-mono text-gold">{stats.counts.factcheck}</span>
                           <div className="absolute right-2 bottom-2 text-gold/10 font-bold text-5xl select-none font-mono">🔍</div>
-                        </div>
+                        </button>
 
-                        <div className="bg-white border border-border p-4 shadow-sm relative overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setAdminActionFilter('analysis')}
+                          title="只看 AI 选题类日志"
+                          className={`bg-white border p-4 shadow-sm relative overflow-hidden text-left cursor-pointer transition-colors ${adminActionFilter === 'analysis' ? 'border-sky-500' : 'border-border hover:border-sky-500/50'}`}
+                        >
                           <span className="text-blue-500 text-[0.65rem] tracking-wider uppercase font-bold block mb-1">AI热榜筛选</span>
                           <span className="text-3xl font-black font-mono text-sky-600">{stats.counts.analysis}</span>
                           <div className="absolute right-2 bottom-2 text-sky-500/10 font-bold text-5xl select-none font-mono">⚡</div>
-                        </div>
+                        </button>
                       </div>
 
                       {/* Distribution breakdown progress bars */}
@@ -3108,7 +3175,29 @@ ${combinedContent}
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <button 
+                      {/* 按动作类型筛选（带条数，避免核查日志淹没写作日志） */}
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {ADMIN_FILTER_TABS.map(tab => {
+                          const count = tab.key === 'all'
+                            ? adminLogs.length
+                            : adminLogs.filter(l => categorizeAuditAction(l.action) === tab.key).length;
+                          if (tab.key !== 'all' && count === 0) return null;
+                          const isActive = adminActionFilter === tab.key;
+                          return (
+                            <button
+                              key={tab.key}
+                              type="button"
+                              onClick={() => setAdminActionFilter(tab.key)}
+                              title={tab.key === 'all' ? '显示全部行为日志' : `只看「${tab.label}」类日志`}
+                              className={`text-[0.65rem] font-bold px-2 py-1 border transition-colors cursor-pointer ${isActive ? 'bg-ink text-paper border-ink' : 'bg-white text-muted border-border hover:border-ink hover:text-ink'}`}
+                            >
+                              {tab.label}
+                              <span className={`ml-1 font-mono ${isActive ? 'text-paper/60' : 'text-muted/60'}`}>{count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <button
                         onClick={exportAdminLogs}
                         className="text-xs bg-ink text-paper border border-ink py-1.5 px-3 font-bold uppercase hover:bg-opacity-90 flex items-center gap-1.5 cursor-pointer"
                       >
@@ -3128,6 +3217,7 @@ ${combinedContent}
                   <div className="flex-1 overflow-y-auto">
                     {(() => {
                       const filtered = adminLogs.filter(log => {
+                        if (adminActionFilter !== 'all' && categorizeAuditAction(log.action) !== adminActionFilter) return false;
                         const term = adminSearchTerm.trim().toLowerCase();
                         if (!term) return true;
                         return (log.action || '').toLowerCase().includes(term) ||
@@ -3137,9 +3227,14 @@ ${combinedContent}
                       });
 
                       if (filtered.length === 0) {
+                        const filterLabel = ADMIN_FILTER_TABS.find(t => t.key === adminActionFilter)?.label;
                         return (
                           <div className="text-center py-16 text-muted italic text-xs">
-                            {adminLogs.length === 0 ? "暂无审计日志，进行AI写作或安全审查即可自动记录..." : "没有符合筛选条件的日志记录"}
+                            {adminLogs.length === 0
+                              ? "暂无审计日志，进行 AI 写作、溯源核查或安全审查即可自动记录..."
+                              : adminActionFilter !== 'all'
+                                ? `「${filterLabel}」类日志暂无匹配记录，可切回「全部」查看其它行为。`
+                                : "没有符合筛选条件的日志记录"}
                           </div>
                         );
                       }
@@ -3164,7 +3259,7 @@ ${combinedContent}
                                 actionBadgeClass = 'bg-sky-50 text-sky-700 border border-sky-200';
                               } else if (log.action === '开始排版写作' || log.action === '自由创作写作') {
                                 actionBadgeClass = 'bg-green-50 text-green-700 border border-green-200';
-                              } else if (log.action === '事实核查') {
+                              } else if (log.action === '事实核查' || log.action === '溯源核查') {
                                 actionBadgeClass = 'bg-purple-50 text-purple-700 border border-purple-200';
                               } else if (log.action === '保存到草稿箱') {
                                 actionBadgeClass = 'bg-amber-50 text-amber-700 border border-amber-200';
@@ -3260,10 +3355,10 @@ ${combinedContent}
               <div className="p-4 border-b border-ink flex justify-between items-center bg-cream">
                 <div>
                   <span className="text-[0.65rem] uppercase font-bold tracking-wider text-muted block">
-                    📜 全局审计版次控制和文章存档
+                    {selectedLogCache.action === '溯源核查' ? '🔍 溯源核查记录与逐条结论' : '📜 全局审计版次控制和文章存档'}
                   </span>
                   <h3 className="font-black text-sm text-ink line-clamp-1" title={selectedLogCache.title}>
-                    【存档】{selectedLogCache.title || '无特定选题'}
+                    {selectedLogCache.action === '溯源核查' ? '【溯源】' : '【存档】'}{selectedLogCache.title || '无特定选题'}
                   </h3>
                 </div>
                 <button 
@@ -3326,23 +3421,25 @@ ${combinedContent}
                   >
                     📋 复制正文纯文本
                   </button>
-                  <button 
-                    onClick={() => {
-                      if (window.confirm(`确认要将当前缓存的"${selectedLogCache.title}"还原到排版写作区域吗？这会覆盖你当前正在起草的内容。`)) {
-                        setDraftTitle(selectedLogCache.title);
-                        setDraftBody(selectedLogCache.articleBody);
-                        setWordCount(selectedLogCache.articleBody?.length || 0);
-                        setShowDraft(true);
-                        setSelectedLogCache(null);
-                        setShowAdminConsole(false);
-                        setStatusBar('✓ 已从审计日志中恢复副本');
-                        setTimeout(() => setStatusBar('就绪'), 2000);
-                      }
-                    }}
-                    className="text-xs bg-ink text-paper border border-ink py-1.5 px-3 font-bold uppercase hover:bg-opacity-90 cursor-pointer"
-                  >
-                    ⚡ 还原到当前写作间
-                  </button>
+                  {selectedLogCache.action !== '溯源核查' && selectedLogCache.action !== '事实核查' && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`确认要将当前缓存的"${selectedLogCache.title}"还原到排版写作区域吗？这会覆盖你当前正在起草的内容。`)) {
+                          setDraftTitle(selectedLogCache.title);
+                          setDraftBody(selectedLogCache.articleBody);
+                          setWordCount(selectedLogCache.articleBody?.length || 0);
+                          setShowDraft(true);
+                          setSelectedLogCache(null);
+                          setShowAdminConsole(false);
+                          setStatusBar('✓ 已从审计日志中恢复副本');
+                          setTimeout(() => setStatusBar('就绪'), 2000);
+                        }
+                      }}
+                      className="text-xs bg-ink text-paper border border-ink py-1.5 px-3 font-bold uppercase hover:bg-opacity-90 cursor-pointer"
+                    >
+                      ⚡ 还原到当前写作间
+                    </button>
+                  )}
                   <button 
                     onClick={() => setSelectedLogCache(null)} 
                     className="text-xs border border-border bg-white text-muted py-1.5 px-3 uppercase hover:text-ink cursor-pointer"

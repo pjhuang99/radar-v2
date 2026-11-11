@@ -8,12 +8,22 @@ import {
   parseFactCheckReport,
   type AutoSource,
   type FactCheckCounts,
+  type FactFinding,
 } from '../lib/factcheck';
 import { AUTHORITY_LABELS } from '../config/sources';
+
+export interface FactCheckAuditEntry {
+  title: string;
+  draftMeta: string;
+  refCount: number;
+  wordCount: number;
+  digest: string;
+}
 
 interface FactCheckPanelProps {
   onClose: () => void;
   callAI: (prompt: string, options?: { maxTokens?: number; temperature?: number }) => Promise<string>;
+  onAuditLog?: (entry: FactCheckAuditEntry) => void;
 }
 
 interface SourceMeta {
@@ -69,6 +79,61 @@ function formatTs(ts: number): string {
   return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// ── 审计日志：溯源核查摘要（写入审计后台存档正文） ──────────────────────
+const AUDIT_DIGEST_CAP = 6000;
+const AUDIT_STATUS_LABELS: Record<string, string> = {
+  VERIFIED: '相符',
+  DISPUTED: '存在争议',
+  CONTRADICTED: '不符',
+  UNVERIFIED: '未能核实',
+};
+
+function buildAuditDigest(params: {
+  title: string;
+  articleText: string;
+  queries: string[];
+  autoSources: AutoSource[];
+  manualLinks: number;
+  scrapedCount: number;
+  findings: FactFinding[];
+  counts: FactCheckCounts;
+}): string {
+  const { title, articleText, queries, autoSources, manualLinks, scrapedCount, findings, counts } = params;
+  const groups = new Set(autoSources.map((s) => s.clusterGroup ?? s.url)).size;
+  const now = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`;
+
+  const head = [
+    '【溯源核查记录】',
+    `时间：${stamp}`,
+    `标题：${title.trim() || '（未填标题）'}`,
+    `正文：${articleText.replace(/\s+/g, '').length} 字`,
+    `检索词：${queries.length ? queries.join(' / ') : '（未生成）'}`,
+    `自动信源：${autoSources.length} 个${groups ? `（${groups} 组独立信源）` : ''}`,
+    `手动链接：${manualLinks} 个（成功读取 ${scrapedCount} 个）`,
+    '',
+    `结论：共 ${findings.length} 条 —— 相符 ${counts.verified} / 争议 ${counts.disputed} / 不符 ${counts.contradicted} / 未核实 ${counts.unverified}`,
+    '──────────',
+  ].join('\n');
+
+  const body = findings
+    .map((f, i) =>
+      [
+        `${i + 1}. [${AUDIT_STATUS_LABELS[f.status] || f.status}${f.risk ? `·风险${f.risk}` : ''}] ${f.original}`,
+        `   结论：${f.conclusion || '—'}`,
+        f.evidence ? `   依据：${f.evidence}` : '',
+        f.sourcesRaw ? `   来源：${f.sourcesRaw}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    )
+    .join('\n');
+
+  const full = `${head}\n${body}`;
+  return full.length > AUDIT_DIGEST_CAP ? `${full.slice(0, AUDIT_DIGEST_CAP)}\n…（摘要已截断）` : full;
+}
+
 // ── 原句定位 ────────────────────────────────────────────────────────────
 /** 把「去掉空白后的下标」映射回原文范围 */
 function mapCollapsedRange(
@@ -121,7 +186,7 @@ export function findQuoteInText(
  * 右栏「溯源核查」→ 自动检索独立信源 + LLM 交叉核查 → 四态卡片。
  * 引擎全部来自 src/lib/factcheck.tsx，与草稿内溯源核查共用同一份实现。
  */
-export default function FactCheckPanel({ onClose, callAI }: FactCheckPanelProps) {
+export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactCheckPanelProps) {
   const [articleText, setArticleText] = useState('');
   const [title, setTitle] = useState('');
   const [linkText, setLinkText] = useState('');
@@ -299,6 +364,29 @@ export default function FactCheckPanel({ onClose, callAI }: FactCheckPanelProps)
       setItems(parsed.items);
       setCounts(parsed.counts);
       addHistory(parsed.counts);
+
+      // ── 审计后台：溯源核查日志 ──────────────────────────────
+      try {
+        const groups = new Set(autoSources.map((s) => s.clusterGroup ?? s.url)).size;
+        onAuditLog?.({
+          title: title.trim() || articleText.slice(0, 40),
+          draftMeta: `[ 模型: DeepSeek | 自动检索 ${autoSources.length} 源/${groups} 组 | 手动链接 ${links.length} 个 | 结论 ${parsed.findings.length} 条 ]`,
+          refCount: autoSources.length + (fetched.validCount || 0),
+          wordCount: articleText.replace(/\s+/g, '').length,
+          digest: buildAuditDigest({
+            title,
+            articleText,
+            queries,
+            autoSources,
+            manualLinks: links.length,
+            scrapedCount: fetched.scrapeCount || 0,
+            findings: parsed.findings,
+            counts: parsed.counts,
+          }),
+        });
+      } catch (e) {
+        console.warn('溯源核查审计日志写入失败（不影响核查结果）', e);
+      }
     } catch (e: any) {
       setError(`核查中断：${e.message || String(e)}`);
     } finally {
