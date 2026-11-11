@@ -365,7 +365,7 @@ export default function FactCheckPanel({ onClose, callAI }: FactCheckPanelProps)
                               0 && (
                               <span className="flex items-center gap-1.5">
                                 {h.counts.contradicted > 0 && (
-                                  <span className="text-accent">必改{h.counts.contradicted}</span>
+                                  <span className="text-accent">不符{h.counts.contradicted}</span>
                                 )}
                                 {h.counts.disputed > 0 && (
                                   <span className="text-gold">争议{h.counts.disputed}</span>
@@ -600,7 +600,7 @@ export default function FactCheckPanel({ onClose, callAI }: FactCheckPanelProps)
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap text-[0.65rem] font-mono">
                   {counts.contradicted > 0 && (
-                    <span className="bg-accent text-white px-2 py-0.5 font-bold">必改 {counts.contradicted}</span>
+                    <span className="bg-accent text-white px-2 py-0.5 font-bold">不符 {counts.contradicted}</span>
                   )}
                   {counts.disputed > 0 && (
                     <span className="bg-gold text-white px-2 py-0.5 font-bold">争议 {counts.disputed}</span>
@@ -613,7 +613,7 @@ export default function FactCheckPanel({ onClose, callAI }: FactCheckPanelProps)
                   )}
                 </div>
                 <div className="text-[0.58rem] text-muted leading-relaxed">
-                  必改＝与信源矛盾 · 争议＝独立信源说法冲突（呈现多方，不选边） · 存疑＝无独立信源支持 · 核实＝与信源一致
+                  不符＝与信源说法不一致（按修正稿改） · 争议＝独立信源说法冲突（呈现多方，不选边） · 存疑＝无独立信源支持 · 核实＝与信源一致
                 </div>
               </div>
             )}

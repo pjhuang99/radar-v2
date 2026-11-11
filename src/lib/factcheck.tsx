@@ -866,6 +866,8 @@ ${sourceContext}
 5. 推理不冒充证据：依据栏以「推理：」开头的条目，状态不得高于 UNVERIFIED。
 6. 数量上限：最多 12 条，优先输出 CONTRADICTED / DISPUTED / UNVERIFIED；VERIFIED 只保留关键数字与核心事实。
 7. 不要输出任何开场白、总结、表格表头或解释性文字。
+8. 状态与结论必须自洽：结论写「与信源一致」的条目，状态必须是 VERIFIED；CONTRADICTED 的结论必须是具体修正表述，不得写「一致」「属实」。
+9. 措辞强弱不算冲突（硬性）：文章写「将/已/宣布将」，信源写「预计/拟/计划自…起」，只是计划性表述与确定表述的差别，关键事实（主体、动作、日期）一致时必须判 VERIFIED，不得判 CONTRADICTED。示例：文章「11月9日公告称将于11月16日上线积存金挂单功能」，信源「该行预计自11月16日起上线积存金挂单功能」→ VERIFIED（结论写「与信源一致」）。同义改写、时间精度不同（11月16日 vs 2026年11月16日）同理。只有信源给出明确相反的信息（数字不同、肯定 vs 否定、主体或时间不同）才判 CONTRADICTED。
 
 待核查文章：
 ${draftBody}`;
@@ -918,6 +920,39 @@ export function applyNumericTolerance(f: FactFinding): FactFinding {
     };
   }
   return f;
+}
+
+/**
+ * 状态自洽守卫：模型偶尔会输出 CONTRADICTED 却把结论写成「与信源一致」。
+ * 结论明确表示一致时以结论为准，降为 VERIFIED，避免把一致的事实标成必改冲突。
+ */
+export function normalizeStatusConsistency(f: FactFinding): FactFinding {
+  if (f.status !== 'CONTRADICTED') return f;
+  const c = (f.conclusion || '').trim();
+  if (!c) return f;
+  // 否定表述（不一致/未提及/说法不成立）说明确实不符
+  if (/[不否未非]/.test(c)) return f;
+  if (!/一致|相符|吻合|属实|无误|无矛盾/.test(c)) return f;
+  // 只有「修正」本身只是措辞/计划性表述时才按一致处理
+  const hasCorrection = /应为|应改|改为|修正|实际是|真实是|有误|有出入/.test(c);
+  if (hasCorrection) {
+    const tail = c.split(/应为|应改|改为|修正为|修正|实际是|真实是|有误|有出入/).pop() || '';
+    const hasWording = /预计|拟|计划|措辞|表述|语气|计划性|即将/.test(tail);
+    // 修正里出现原文/信源都没有的新数字，说明是实质性改动，不得降级
+    const known = new Set(
+      `${f.original} ${f.evidence}`.match(/\d+(?:\.\d+)?/g) || []
+    );
+    const newNumber = (tail.match(/\d+(?:\.\d+)?/g) || []).some(
+      (n) => !/^(?:19|20)\d{2}$/.test(n) && !known.has(n)
+    );
+    if (!hasWording || newNumber) return f;
+    return { ...f, status: 'VERIFIED', risk: '低', conclusion: '措辞差异（将/预计），关键事实一致' };
+  }
+  // 去掉结论开头的「与信源一致，」之类前缀，避免渲染成「核实一致：与信源一致…」
+  const rest = c
+    .replace(/^[^，,：:；;]{0,16}?(一致|相符|吻合|属实|无误|无矛盾)[，,：:；;\s]*/, '')
+    .trim();
+  return { ...f, status: 'VERIFIED', risk: '低', conclusion: rest || '措辞差异，事实相符' };
 }
 
 function cleanField(raw: string): string {
@@ -1012,7 +1047,7 @@ export function parseFactFindings(report: string): FactFinding[] {
       inference: /因果/.test(claimType),
     };
     if (!finding.original) continue;
-    findings.push(applyNumericTolerance(finding));
+    findings.push(normalizeStatusConsistency(applyNumericTolerance(finding)));
   }
 
   return findings;
@@ -1023,16 +1058,10 @@ const STATUS_META: Record<
   FactStatus,
   { label: string; action: string; badge: string; text: string }
 > = {
-  CONTRADICTED: { label: '冲突', action: '必改', badge: 'bg-accent text-white', text: 'text-accent' },
+  CONTRADICTED: { label: '不符', action: '必改', badge: 'bg-accent text-white', text: 'text-accent' },
   DISPUTED: { label: 'DISPUTED', action: '争议', badge: 'bg-gold text-white', text: 'text-gold' },
   UNVERIFIED: { label: '未核实', action: '存疑', badge: 'bg-blue text-white', text: 'text-blue' },
   VERIFIED: { label: '核实', action: '一致', badge: 'bg-green text-white', text: 'text-green' },
-};
-
-const RISK_CLASS: Record<string, string> = {
-  高: 'text-accent border-accent/40',
-  中: 'text-gold border-gold/40',
-  低: 'text-muted border-border',
 };
 
 export function parseFactCheckReport(
@@ -1099,7 +1128,7 @@ export function parseFactCheckReport(
         const idx = m2 ? parseInt(m2[1]) - 1 : 0;
         const url = autoSourceUrls[idx] || '';
         const d = domainLabel(url);
-        return { link: url, label: `🤖 ${d || '自动检索信源'}` };
+        return { link: url, label: d || '自动检索信源' };
       } else if (part.includes('[来源')) {
         const m2 = part.match(/\[来源(\d+)\]/);
         const idx = m2 ? parseInt(m2[1]) - 1 : 0;
@@ -1152,14 +1181,9 @@ export function parseFactCheckReport(
             {meta.label}
           </span>
           <div className="flex-1 min-w-0">
-            {/* 元信息：风险 / 断言类型 / 时间锚点 / 因果 */}
+            {/* 元信息：断言类型 / 时间锚点 / 因果 */}
             <div className="flex items-center gap-1.5 flex-wrap mb-1.5 text-[0.58rem] font-mono">
               <span className="text-muted">{meta.action}</span>
-              {f.risk && (
-                <span className={`border px-1 py-0.5 font-bold ${RISK_CLASS[f.risk] || RISK_CLASS['低']}`}>
-                  风险{f.risk}
-                </span>
-              )}
               {f.claimType && <span className="text-muted border border-border px-1 py-0.5">{f.claimType}</span>}
               {f.asOf && f.asOf !== '未知' && (
                 <span className="text-muted border border-border px-1 py-0.5">截至 {f.asOf}</span>
@@ -1197,7 +1221,6 @@ export function parseFactCheckReport(
 
         {f.evidence && (
           <div className="text-[0.68rem] text-muted mt-1.5 leading-relaxed border-l-2 border-border pl-2">
-            {f.evidence.startsWith('推理：') ? '🧠 ' : '📎 '}
             {f.evidence}
           </div>
         )}
