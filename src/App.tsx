@@ -124,13 +124,13 @@ const INITIAL_MOCK_AUDIT_LOGS = [
     id: "mock-log-0",
     timestamp: new Date(Date.now() - 1800000).toISOString(),
     epoch: Date.now() - 1800000,
-    action: "溯源核查",
+    action: "事实核查",
     title: "存量房贷利率下调落地：银行让利空间与提前还贷潮的再平衡",
     draftMeta: "[ 模型: DeepSeek | 自动检索 5 源/4 组 | 手动链接 1 个 | 结论 4 条 ]",
     referencesCount: 6,
     wordCount: 1480,
     operator: "peijian@gmail.com",
-    articleBody: "【溯源核查记录】\n时间：2026-05-26 10:12\n标题：存量房贷利率下调落地：银行让利空间与提前还贷潮的再平衡\n正文：1480 字\n检索词：存量房贷利率下调 公告 / 银行净息差 2026 / 提前还贷 规模\n自动信源：5 个（4 组独立信源）\n手动链接：1 个（成功读取 1 个）\n\n结论：共 4 条 —— 相符 2 / 争议 1 / 不符 1 / 未核实 0\n──────────\n1. [相符·风险低] 央行于本月宣布下调存量房贷利率约 0.5 个百分点\n   结论：与官方公告一致，执行时间为 11 月 1 日。\n   依据：央行官网公告原文与三家主要银行实施细则均载明同一时间点。\n   来源：pbc.gov.cn、icbc.com.cn、ccb.com\n2. [不符·风险高] 文章称“本次调整覆盖全部存量房贷，无一例外”\n   结论：与事实不符，仅覆盖首套房与符合条件的二套房贷款，公积金贷款不在此次调整范围内。\n   依据：多家银行答疑明确列出除外情形。\n   来源：bankofchina.com、21jingji.com\n3. [存在争议·风险中] 若存量利率全面下调，银行净息差将收窄 15 个基点\n   结论：不同机构测算区间为 8–20 个基点，15 个基点属中性估计，宜标注“机构测算”。\n   依据：券商研报口径存在差异。\n   来源：eastmoney.com\n4. [相符·风险低] 提前还贷申请量在政策落地后一周环比下降约三成\n   结论：与媒体报道的银行网点反馈基本一致。\n   依据：多家媒体走访口径接近。\n   来源：yicai.com、stcn.com"
+    articleBody: "【事实核查记录】\n时间：2026-05-26 10:12\n标题：存量房贷利率下调落地：银行让利空间与提前还贷潮的再平衡\n正文：1480 字\n检索词：存量房贷利率下调 公告 / 银行净息差 2026 / 提前还贷 规模\n自动信源：5 个（4 组独立信源）\n手动链接：1 个（成功读取 1 个）\n\n结论：共 4 条 —— 相符 2 / 争议 1 / 不符 1 / 未核实 0\n──────────\n1. [相符·风险低] 央行于本月宣布下调存量房贷利率约 0.5 个百分点\n   结论：与官方公告一致，执行时间为 11 月 1 日。\n   依据：央行官网公告原文与三家主要银行实施细则均载明同一时间点。\n   来源：pbc.gov.cn、icbc.com.cn、ccb.com\n2. [不符·风险高] 文章称“本次调整覆盖全部存量房贷，无一例外”\n   结论：与事实不符，仅覆盖首套房与符合条件的二套房贷款，公积金贷款不在此次调整范围内。\n   依据：多家银行答疑明确列出除外情形。\n   来源：bankofchina.com、21jingji.com\n3. [存在争议·风险中] 若存量利率全面下调，银行净息差将收窄 15 个基点\n   结论：不同机构测算区间为 8–20 个基点，15 个基点属中性估计，宜标注“机构测算”。\n   依据：券商研报口径存在差异。\n   来源：eastmoney.com\n4. [相符·风险低] 提前还贷申请量在政策落地后一周环比下降约三成\n   结论：与媒体报道的银行网点反馈基本一致。\n   依据：多家媒体走访口径接近。\n   来源：yicai.com、stcn.com"
   },
   {
     id: "mock-log-1",
@@ -170,26 +170,33 @@ const INITIAL_MOCK_AUDIT_LOGS = [
   }
 ];
 
-type AdminActionCategory = 'writing' | 'analysis' | 'factcheck' | 'draft' | 'other';
+type AdminActionCategory = 'writing' | 'analysis' | 'factcheck' | 'sourcecheck' | 'draft' | 'other';
 type AdminActionFilter = 'all' | AdminActionCategory;
 
 const ADMIN_FILTER_TABS: { key: AdminActionFilter; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'writing', label: '写作' },
   { key: 'analysis', label: 'AI选题' },
-  { key: 'factcheck', label: '核查' },
+  { key: 'factcheck', label: '事实核查' },
+  { key: 'sourcecheck', label: '溯源核查' },
   { key: 'draft', label: '草稿' },
   { key: 'other', label: '其他' }
 ];
 
+// 两个核查入口分开统计：
+// 事实核查 = 顶部独立面板（自动检索外部信源后比对）
+// 溯源核查 = 写稿窗口底部按钮（核对草稿自带信源）
 const categorizeAuditAction = (action: string): AdminActionCategory => {
   const a = action || '';
-  if (a.includes('核查')) return 'factcheck';
+  if (a.includes('溯源核查')) return 'sourcecheck';
+  if (a.includes('事实核查') || a.includes('核查')) return 'factcheck';
   if (a.includes('选题')) return 'analysis';
   if (a.includes('写作') || a.includes('创作') || a.includes('排版')) return 'writing';
   if (a.includes('草稿')) return 'draft';
   return 'other';
 };
+
+const isCheckAction = (action: string) => action === '事实核查' || action === '溯源核查';
 
 export default function App() {
   const [activeOperator, setActiveOperator] = useState<string>(() => {
@@ -666,7 +673,7 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
   };
 
   const getAuditStats = () => {
-    const counts = { analysis: 0, writing: 0, factcheck: 0, drafts: 0 };
+    const counts = { analysis: 0, writing: 0, factcheck: 0, sourcecheck: 0, drafts: 0 };
     const stances: Record<string, number> = {};
     const styles: Record<string, number> = {};
     
@@ -676,6 +683,7 @@ const validPin = process.env.ADMIN_PIN || 'radar_admin_2026';
       if (category === 'analysis') counts.analysis++;
       else if (category === 'writing') counts.writing++;
       else if (category === 'factcheck') counts.factcheck++;
+      else if (category === 'sourcecheck') counts.sourcecheck++;
       else if (category === 'draft') counts.drafts++;
 
       if (log.draftMeta) {
@@ -1500,9 +1508,9 @@ ${research}
       });
       setPendingCorrections(corrections);
       setIsFactchecking(false);
-      setStatusBar('事实核查完成');
+      setStatusBar('溯源核查完成');
       playNotification();
-      logAdminBehavior('事实核查', draftTitle, `核查信源: ${validUrlsCount}个手动 + ${autoSources.length}个自动检索`, validUrlsCount + autoSources.length, draftBody.length, draftBody, activeOperator);
+      logAdminBehavior('溯源核查', draftTitle, `核查信源: ${validUrlsCount}个手动 + ${autoSources.length}个自动检索`, validUrlsCount + autoSources.length, draftBody.length, draftBody, activeOperator);
       setTimeout(() => setStatusBar('就绪'), 3000);
     } catch (e: any) {
       setFactcheckItems([<div key="error" className="text-accent font-mono">核查中断: {e.message}</div>]);
@@ -1903,7 +1911,7 @@ ${combinedContent}
             style={{ fontSize: '0.75rem', padding: '6px 15px' }}
             onClick={() => setShowFactCheckPanel(true)}
           >
-            <ShieldCheck size={14} /> 溯源核查
+            <ShieldCheck size={14} /> 事实核查
           </button>
           <button
             className="cat-btn !bg-ink !text-paper border-none flex items-center gap-2"
@@ -2804,7 +2812,7 @@ ${combinedContent}
           callAI={callAI}
           onAuditLog={(entry) =>
             logAdminBehavior(
-              '溯源核查',
+              '事实核查',
               entry.title,
               entry.draftMeta,
               entry.refCount,
@@ -3042,7 +3050,7 @@ ${combinedContent}
                   const total = adminLogs.length;
                   return (
                     <>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                         <button
                           type="button"
                           onClick={() => setAdminActionFilter('all')}
@@ -3068,12 +3076,23 @@ ${combinedContent}
                         <button
                           type="button"
                           onClick={() => setAdminActionFilter('factcheck')}
-                          title="只看核查类日志"
+                          title="只看顶部独立面板的「事实核查」日志"
                           className={`bg-white border p-4 shadow-sm relative overflow-hidden text-left cursor-pointer transition-colors ${adminActionFilter === 'factcheck' ? 'border-gold' : 'border-border hover:border-gold/50'}`}
                         >
-                          <span className="text-gold border-gold/10 text-[0.65rem] tracking-wider uppercase font-bold block mb-1">溯源核查审计</span>
+                          <span className="text-gold border-gold/10 text-[0.65rem] tracking-wider uppercase font-bold block mb-1">事实核查（独立面板）</span>
                           <span className="text-3xl font-black font-mono text-gold">{stats.counts.factcheck}</span>
                           <div className="absolute right-2 bottom-2 text-gold/10 font-bold text-5xl select-none font-mono">🔍</div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setAdminActionFilter('sourcecheck')}
+                          title="只看写稿窗口内的「溯源核查」日志"
+                          className={`bg-white border p-4 shadow-sm relative overflow-hidden text-left cursor-pointer transition-colors ${adminActionFilter === 'sourcecheck' ? 'border-teal-500' : 'border-border hover:border-teal-500/50'}`}
+                        >
+                          <span className="text-teal-700 text-[0.65rem] tracking-wider uppercase font-bold block mb-1">溯源核查（写稿窗口）</span>
+                          <span className="text-3xl font-black font-mono text-teal-700">{stats.counts.sourcecheck}</span>
+                          <div className="absolute right-2 bottom-2 text-teal-500/10 font-bold text-5xl select-none font-mono">🧭</div>
                         </button>
 
                         <button
@@ -3231,7 +3250,7 @@ ${combinedContent}
                         return (
                           <div className="text-center py-16 text-muted italic text-xs">
                             {adminLogs.length === 0
-                              ? "暂无审计日志，进行 AI 写作、溯源核查或安全审查即可自动记录..."
+                              ? "暂无审计日志，进行 AI 写作、事实核查/溯源核查或安全审查即可自动记录..."
                               : adminActionFilter !== 'all'
                                 ? `「${filterLabel}」类日志暂无匹配记录，可切回「全部」查看其它行为。`
                                 : "没有符合筛选条件的日志记录"}
@@ -3259,8 +3278,10 @@ ${combinedContent}
                                 actionBadgeClass = 'bg-sky-50 text-sky-700 border border-sky-200';
                               } else if (log.action === '开始排版写作' || log.action === '自由创作写作') {
                                 actionBadgeClass = 'bg-green-50 text-green-700 border border-green-200';
-                              } else if (log.action === '事实核查' || log.action === '溯源核查') {
+                              } else if (log.action === '事实核查') {
                                 actionBadgeClass = 'bg-purple-50 text-purple-700 border border-purple-200';
+                              } else if (log.action === '溯源核查') {
+                                actionBadgeClass = 'bg-teal-50 text-teal-700 border border-teal-200';
                               } else if (log.action === '保存到草稿箱') {
                                 actionBadgeClass = 'bg-amber-50 text-amber-700 border border-amber-200';
                               }
@@ -3355,10 +3376,10 @@ ${combinedContent}
               <div className="p-4 border-b border-ink flex justify-between items-center bg-cream">
                 <div>
                   <span className="text-[0.65rem] uppercase font-bold tracking-wider text-muted block">
-                    {selectedLogCache.action === '溯源核查' ? '🔍 溯源核查记录与逐条结论' : '📜 全局审计版次控制和文章存档'}
+                    {isCheckAction(selectedLogCache.action) ? `🔍 ${selectedLogCache.action}记录与逐条结论` : '📜 全局审计版次控制和文章存档'}
                   </span>
                   <h3 className="font-black text-sm text-ink line-clamp-1" title={selectedLogCache.title}>
-                    {selectedLogCache.action === '溯源核查' ? '【溯源】' : '【存档】'}{selectedLogCache.title || '无特定选题'}
+                    {isCheckAction(selectedLogCache.action) ? '【溯源】' : '【存档】'}{selectedLogCache.title || '无特定选题'}
                   </h3>
                 </div>
                 <button 
@@ -3421,7 +3442,7 @@ ${combinedContent}
                   >
                     📋 复制正文纯文本
                   </button>
-                  {selectedLogCache.action !== '溯源核查' && selectedLogCache.action !== '事实核查' && (
+                  {!isCheckAction(selectedLogCache.action) && (
                     <button
                       onClick={() => {
                         if (window.confirm(`确认要将当前缓存的"${selectedLogCache.title}"还原到排版写作区域吗？这会覆盖你当前正在起草的内容。`)) {

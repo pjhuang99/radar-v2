@@ -79,7 +79,7 @@ function formatTs(ts: number): string {
   return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-// ── 审计日志：溯源核查摘要（写入审计后台存档正文） ──────────────────────
+// ── 审计日志：事实核查摘要（写入审计后台存档正文） ──────────────────────
 const AUDIT_DIGEST_CAP = 6000;
 const AUDIT_STATUS_LABELS: Record<string, string> = {
   VERIFIED: '相符',
@@ -105,7 +105,7 @@ function buildAuditDigest(params: {
   const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`;
 
   const head = [
-    '【溯源核查记录】',
+    '【事实核查记录】',
     `时间：${stamp}`,
     `标题：${title.trim() || '（未填标题）'}`,
     `正文：${articleText.replace(/\s+/g, '').length} 字`,
@@ -183,7 +183,7 @@ export function findQuoteInText(
 
 /**
  * 独立事实核查入口：左栏粘贴待核查文章（必填）+ 可选标题/补充链接，
- * 右栏「溯源核查」→ 自动检索独立信源 + LLM 交叉核查 → 四态卡片。
+ * 右栏「事实核查」→ 自动检索独立信源 + LLM 交叉核查 → 四态卡片。
  * 引擎全部来自 src/lib/factcheck.tsx，与草稿内溯源核查共用同一份实现。
  */
 export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactCheckPanelProps) {
@@ -365,7 +365,7 @@ export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactChec
       setCounts(parsed.counts);
       addHistory(parsed.counts);
 
-      // ── 审计后台：溯源核查日志 ──────────────────────────────
+      // ── 审计后台：事实核查日志 ──────────────────────────────
       try {
         const groups = new Set(autoSources.map((s) => s.clusterGroup ?? s.url)).size;
         onAuditLog?.({
@@ -385,7 +385,7 @@ export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactChec
           }),
         });
       } catch (e) {
-        console.warn('溯源核查审计日志写入失败（不影响核查结果）', e);
+        console.warn('事实核查审计日志写入失败（不影响核查结果）', e);
       }
     } catch (e: any) {
       setError(`核查中断：${e.message || String(e)}`);
@@ -403,7 +403,7 @@ export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactChec
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <ShieldCheck size={18} className="text-accent" />
-              <h2 className="font-serif text-[1.15rem] font-bold text-ink">溯源核查</h2>
+              <h2 className="font-serif text-[1.15rem] font-bold text-ink">事实核查</h2>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -593,7 +593,7 @@ export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactChec
                 </>
               ) : (
                 <>
-                  <ShieldCheck size={14} /> 溯源核查
+                  <ShieldCheck size={14} /> 事实核查
                 </>
               )}
             </button>
@@ -674,7 +674,7 @@ export default function FactCheckPanel({ onClose, callAI, onAuditLog }: FactChec
 
             {!ranOnce && (
               <div className="text-[0.75rem] text-muted italic border border-dashed border-border px-4 py-8 text-center">
-                左侧粘贴文章后点「溯源核查」，结果会显示在这里。点卡片里的原文可定位到左侧对应位置。
+                左侧粘贴文章后点「事实核查」，结果会显示在这里。点卡片里的原文可定位到左侧对应位置。
               </div>
             )}
 
